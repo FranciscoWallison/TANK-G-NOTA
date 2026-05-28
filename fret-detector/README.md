@@ -222,11 +222,35 @@ As correções ficam em `corrections.json` e são carregadas em sessões futuras
 
 ---
 
+---
+
+## 🎮 Jogo (Guitar Hero com guitarra real)
+
+`game.py` — notas caem em 6 lanes (uma por corda); toque a nota na guitarra quando ela cruza a linha de acerto. Valida a **nota** (pitch); a corda/casa é dica.
+
+```powershell
+python game.py --device 2 --gain 40 --chart escala_mi   # com guitarra
+python game.py --mock --chart escala_mi                 # ESPAÇO = tocar (sem guitarra)
+python game.py --list                                   # músicas embutidas
+```
+
+| Peça | Arquivo |
+|------|---------|
+| Jogo Pygame (loop, queda, julgamento, HUD) | `game.py` |
+| Captura + pitch + **onset** (detecção de ataque) | `audio_engine.py` |
+| Músicas/sequências | `charts.py` |
+
+- **Onset detection**: só o *ataque* (pluck) dispara um acerto — nota sustentada não conta várias vezes.
+- **Julgamento**: Perfect (≤70 ms) / Good (≤150 ms) / Miss; `--audio-offset-ms` compensa latência.
+
+---
+
 ## 📍 Roadmap
 
 - [x] **v1** — Detecção de nota + lista de posições possíveis ✅
 - [x] **v2** — Calibração + classificador + modo aprendizado ✅
-- [ ] **v2.1** — GUI Tkinter com diagrama do braço destacado
-- [ ] **v2.2** — Recalibração rápida (1 amostra por corda solta → adapta)
-- [ ] **v3** — Polifonia (acordes)
-- [ ] **v3.5** — Modo "tocar junto" (carrega tablatura, valida cada nota)
+- [x] **v3** — Jogo Guitar Hero (onset + julgamento de timing) ✅
+- [ ] Trilha/metrônomo tocando junto no jogo
+- [ ] Editor de chart / importar MIDI/tablatura
+- [ ] Polifonia (acordes)
+- [ ] GUI Tkinter com diagrama do braço

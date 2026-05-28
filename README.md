@@ -33,6 +33,24 @@ Agulha de cents com faixas verde (±5¢) / amarelo (±15¢) / vermelho, nota em 
 
 > As imagens acima são ilustrações da interface renderizadas por [`docs/generate_mockup.py`](docs/generate_mockup.py), fiéis ao layout de `tuner.py`.
 
+### 🎮 Jogo "Guitar Hero" com guitarra real (`game.py`)
+
+Notas caem em 6 lanes (uma por corda). Quando uma nota cruza a linha de acerto, você **toca na guitarra de verdade** — o áudio é identificado e o acerto é julgado por timing (Perfect / Good / Miss), com pontuação e combo. Valida a **nota** (pitch); a corda/casa aparece como **dica**.
+
+```bash
+# tocar com a guitarra (TANK-G no device 2)
+python game.py --device 2 --gain 40 --chart escala_mi
+
+# testar sem guitarra (ESPAÇO = tocar a nota alvo no tempo certo)
+python game.py --mock --chart escala_mi
+
+# listar as músicas embutidas
+python game.py --list
+```
+
+Controles: **ESPAÇO** (mock) toca a nota · **P** pausa · **R** reinicia · **ESC** sai.
+Se o timing parecer adiantado/atrasado com a guitarra, ajuste `--audio-offset-ms`.
+
 ---
 
 ## ✨ Funcionalidades principais
@@ -43,6 +61,7 @@ Agulha de cents com faixas verde (±5¢) / amarelo (±15¢) / vermelho, nota em 
 | 📡 **Detector de nota** | `fret-detector/fret_detector.py` | Detecta a nota tocada e lista **todas** as posições possíveis no braço. |
 | 🧠 **Classificador corda+casa** | `fret-detector/fret_detector.py --classify` | Após calibrar, adivinha **a corda e casa exata** pelo timbre. Modo aprendizado embutido. |
 | 🎙️ **Calibração** | `fret-detector/calibrate.py` | Aprende o timbre da SUA guitarra (~5 min) pra melhorar a detecção de corda. |
+| 🎮 **Jogo (Guitar Hero)** | `fret-detector/game.py` | Notas caem na tela; você toca na guitarra de verdade e o acerto é julgado por timing. |
 | 🔧 **Utilitários** | `list_devices.py`, `level_monitor.py` | Descobrir o ID do dispositivo e debugar nível de sinal. |
 
 Documentação completa do pedal (painéis, efeitos, app, firmware) em [`tank-g/`](tank-g/).
@@ -122,6 +141,9 @@ TANK-G-NOTA/
 │   ├── calibrate.py        ← calibração da guitarra
 │   ├── features.py         ← extração de timbre (FFT)
 │   ├── classifier.py       ← k-NN + aprendizado online
+│   ├── game.py             ← jogo Guitar Hero (Pygame)
+│   ├── audio_engine.py     ← captura + pitch + onset (p/ o jogo)
+│   ├── charts.py           ← músicas/sequências do jogo
 │   ├── list_devices.py     ← lista dispositivos de áudio
 │   ├── level_monitor.py    ← debug de nível de sinal
 │   ├── requirements.txt
@@ -162,10 +184,11 @@ TANK-G-NOTA/
 - [x] Detector de nota + posições
 - [x] Classificador corda+casa com calibração e aprendizado
 - [x] Correção de oitava + viés de ergonomia
-- [ ] Suavização temporal no detector (mediana + histerese)
-- [ ] GUI com diagrama do braço
+- [x] **Jogo Guitar Hero** com detecção de ataque (onset) e julgamento de timing
+- [ ] Trilha de áudio / metrônomo tocando junto no jogo
+- [ ] Editor de chart / importar de MIDI ou tablatura
 - [ ] Polifonia (acordes)
-- [ ] Modo "tocar junto" (valida tablatura)
+- [ ] GUI com diagrama do braço
 
 ---
 
