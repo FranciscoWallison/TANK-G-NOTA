@@ -1,0 +1,38 @@
+# ===== Software proprietário M-VAVE (NÃO redistribuir) =====
+apps/
+*.zip
+*.rar
+*.exe
+*.dll
+
+# ===== Manuais / PDFs proprietários =====
+*.pdf
+
+# ===== Dados gerados / pessoais (cada guitarra gera os seus) =====
+calibration.json
+corrections.json
+**/calibration.json
+**/corrections.json
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ===== Áudio / gravações de teste =====
+*.wav
+*.flac
+*.ogg
+
+# ===== Editores / SO =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
