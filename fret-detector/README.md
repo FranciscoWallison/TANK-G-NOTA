@@ -231,6 +231,7 @@ As correções ficam em `corrections.json` e são carregadas em sessões futuras
 ```powershell
 python game.py --device 2 --gain 40 --chart escala_mi   # com guitarra
 python game.py --mock --chart escala_mi                 # ESPAÇO = tocar (sem guitarra)
+python game.py --difficulty hard                        # easy / normal / hard
 python game.py --list                                   # músicas embutidas
 ```
 

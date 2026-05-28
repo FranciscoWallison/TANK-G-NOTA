@@ -26,7 +26,7 @@ print(f"init OK — {len(g.notes)} notas, lane da 1ª = {g.notes[0].lane}")
 # ---- Teste 1: acerto perfeito ----
 target = g.notes[0]
 # força o relógio pra que elapsed == hit_time da nota alvo (acerto perfeito)
-g.start_wall = time.time() - (target.hit_time + g.pause_accum) - __import__("game").COUNTDOWN
+g.start_wall = time.time() - (target.hit_time + g.pause_accum) - g.countdown
 ts = time.time()
 g.process_onset(target.midi, ts)
 print(f"após onset no tempo certo: result={target.result} score={g.score} combo={g.combo}")
@@ -43,7 +43,7 @@ print("  ✓ ataque de nota inexistente ignorado\n")
 # ---- Teste 3: miss ao passar da janela ----
 target2 = g.notes[1]
 # avança o relógio pra muito além do hit_time da 2ª nota
-g.start_wall = time.time() - (target2.hit_time + 5.0) - __import__("game").COUNTDOWN
+g.start_wall = time.time() - (target2.hit_time + 5.0) - g.countdown
 g._check_misses()
 print(f"após passar do tempo: nota2 result={target2.result}")
 assert target2.result == "miss", f"esperava miss, veio {target2.result}"
@@ -63,7 +63,7 @@ print("  ✓ todos os _draw_* rodaram sem erro\n")
 # ---- Teste 5: mock play acerta a nota mais próxima ----
 g._reset()
 nxt = min((n for n in g.notes if not n.judged), key=lambda n: n.hit_time)
-g.start_wall = time.time() - (nxt.hit_time) - __import__("game").COUNTDOWN
+g.start_wall = time.time() - (nxt.hit_time) - g.countdown
 g._mock_play()
 judged = [n for n in g.notes if n.judged]
 print(f"  mock_play julgou {len(judged)} nota(s): {[n.result for n in judged]}")

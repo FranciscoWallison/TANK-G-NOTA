@@ -12,10 +12,14 @@ Uso:
 Controles: ESPAÇO (mock) toca a nota alvo · P pausa · R reinicia · ESC sai
 """
 import argparse
+import os
 import sys
 import time
+import warnings
 from dataclasses import dataclass
 
+warnings.filterwarnings("ignore", message="pkg_resources is deprecated")
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import pygame
 
 from fret_detector import TUNINGS, midi_to_note, fret_positions, find_tank_g_device
@@ -31,9 +35,16 @@ LEAD_TIME = 2.0          # s que a nota leva pra cair do topo até a linha
 COUNTDOWN = LEAD_TIME + 1.0
 FPS = 60
 
-# ---- julgamento (janelas em ms) ----
+# ---- julgamento (janelas em ms) — valores "normal" (padrão) ----
 PERFECT_MS = 70
 GOOD_MS = 150
+
+# ---- níveis de dificuldade (normal = exatamente o gameplay validado) ----
+DIFFICULTY = {
+    "easy":   {"lead_time": 2.8, "perfect_ms": 90, "good_ms": 190},
+    "normal": {"lead_time": LEAD_TIME, "perfect_ms": PERFECT_MS, "good_ms": GOOD_MS},
+    "hard":   {"lead_time": 1.3, "perfect_ms": 55, "good_ms": 110},
+}
 
 # ---- cores ----
 BG = (18, 18, 22)
@@ -57,12 +68,12 @@ LANE_COLORS = [
 STRING_LABEL = {6: "6ª(E)", 5: "5ª(A)", 4: "4ª(D)", 3: "3ª(G)", 2: "2ª(B)", 1: "1ª(e)"}
 
 
-def judge(delta_ms: float) -> str | None:
+def judge(delta_ms: float, perfect_ms: float = PERFECT_MS, good_ms: float = GOOD_MS) -> str | None:
     """Classifica o acerto pelo erro de timing (ms). None = fora da janela (miss)."""
     a = abs(delta_ms)
-    if a <= PERFECT_MS:
+    if a <= perfect_ms:
         return "perfect"
-    if a <= GOOD_MS:
+    if a <= good_ms:
         return "good"
     return None
 
@@ -104,13 +115,20 @@ def build_notes(chart, tuning_name: str) -> list[GameNote]:
 
 class Game:
     def __init__(self, chart, tuning_name, engine=None, audio_offset=0.0,
-                 show_hint=True, mock=False):
+                 show_hint=True, mock=False, difficulty="normal"):
         self.chart = chart
         self.tuning_name = tuning_name
         self.engine = engine
         self.audio_offset = audio_offset
         self.show_hint = show_hint
         self.mock = mock
+
+        diff = DIFFICULTY[difficulty]
+        self.difficulty = difficulty
+        self.lead_time = diff["lead_time"]
+        self.perfect_ms = diff["perfect_ms"]
+        self.good_ms = diff["good_ms"]
+        self.countdown = self.lead_time + 1.0
 
         pygame.display.init()
         pygame.font.init()
@@ -148,14 +166,14 @@ class Game:
 
     # ---- tempo ----
     def elapsed(self) -> float:
-        return (time.time() - self.start_wall) - COUNTDOWN - self.pause_accum
+        return (time.time() - self.start_wall) - self.countdown - self.pause_accum
 
     def song_done(self) -> bool:
         return all(n.judged for n in self.notes) and self.notes != []
 
     # ---- julgamento de um ataque ----
     def process_onset(self, midi: int, ts: float):
-        onset_elapsed = (ts - self.start_wall) - COUNTDOWN - self.pause_accum - self.audio_offset
+        onset_elapsed = (ts - self.start_wall) - self.countdown - self.pause_accum - self.audio_offset
         best, best_dt = None, None
         for n in self.notes:
             if n.judged or n.midi != midi:
@@ -165,7 +183,7 @@ class Game:
                 best, best_dt = n, dt
         if best is None:
             return
-        res = judge((onset_elapsed - best.hit_time) * 1000)
+        res = judge((onset_elapsed - best.hit_time) * 1000, self.perfect_ms, self.good_ms)
         if res:
             best.judged = True
             best.result = res
@@ -187,7 +205,7 @@ class Game:
     def _check_misses(self):
         el = self.elapsed()
         for n in self.notes:
-            if not n.judged and (el - n.hit_time) > GOOD_MS / 1000:
+            if not n.judged and (el - n.hit_time) > self.good_ms / 1000:
                 n.judged = True
                 n.result = "miss"
                 self._register("miss", n.lane)
@@ -226,7 +244,7 @@ class Game:
             if n.judged:
                 continue
             # progress: 0 no topo (hit_time - LEAD_TIME), 1 na linha (hit_time)
-            progress = (el - (n.hit_time - LEAD_TIME)) / LEAD_TIME
+            progress = (el - (n.hit_time - self.lead_time)) / self.lead_time
             if progress < -0.05 or progress > 1.25:
                 continue
             y = progress * HIT_LINE_Y
@@ -276,7 +294,7 @@ class Game:
         if el >= 0:
             return
         n = int(-el) + 1
-        txt = self.font_big.render(str(n) if n <= int(COUNTDOWN) else "GO", True, FG)
+        txt = self.font_big.render(str(n) if n <= int(self.countdown) else "GO", True, FG)
         self.screen.blit(txt, (WIDTH / 2 - txt.get_width() / 2, HEIGHT / 2 - 40))
 
     def _draw_pitch(self):
@@ -367,6 +385,8 @@ def main():
     parser.add_argument("--device", type=int, help="ID do dispositivo de entrada")
     parser.add_argument("--gain", type=float, default=40.0)
     parser.add_argument("--chart", default=DEFAULT_CHART, choices=list(CHARTS.keys()))
+    parser.add_argument("--difficulty", default="normal", choices=list(DIFFICULTY.keys()),
+                        help="easy (mais lento) / normal (padrão) / hard (mais rápido)")
     parser.add_argument("--audio-offset-ms", type=float, default=80.0,
                         help="compensa latência do pipeline (default 80; ignore em --mock)")
     parser.add_argument("--no-hint", action="store_true", help="esconde a dica de casa")
@@ -407,13 +427,13 @@ def main():
         audio_offset = args.audio_offset_ms / 1000.0
         print(f"🎸 Capturando de [{device}] {engine.device_name()} | gain {args.gain}x")
 
-    print(f"🎮 {chart.name} — {chart.bpm} BPM ({chart.tuning})")
+    print(f"🎮 {chart.name} — {chart.bpm} BPM ({chart.tuning}) | dificuldade: {args.difficulty}")
     if args.mock:
         print("   MODO MOCK: pressione ESPAÇO no tempo certo pra 'tocar' a nota.")
 
     try:
         game = Game(chart, chart.tuning, engine=engine, audio_offset=audio_offset,
-                    show_hint=not args.no_hint, mock=args.mock)
+                    show_hint=not args.no_hint, mock=args.mock, difficulty=args.difficulty)
         game.run()
     finally:
         if engine is not None:

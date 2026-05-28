@@ -44,12 +44,21 @@ python game.py --device 2 --gain 40 --chart escala_mi
 # testar sem guitarra (ESPAÇO = tocar a nota alvo no tempo certo)
 python game.py --mock --chart escala_mi
 
+# níveis de dificuldade (velocidade de queda + tolerância)
+python game.py --device 2 --gain 40 --difficulty hard
+
 # listar as músicas embutidas
 python game.py --list
 ```
 
 Controles: **ESPAÇO** (mock) toca a nota · **P** pausa · **R** reinicia · **ESC** sai.
 Se o timing parecer adiantado/atrasado com a guitarra, ajuste `--audio-offset-ms`.
+
+| Dificuldade | Velocidade | Janela Perfect / Good |
+|-------------|-----------|------------------------|
+| `easy` | mais lenta (2.8 s de queda) | 90 / 190 ms |
+| `normal` (padrão) | 2.0 s de queda | 70 / 150 ms |
+| `hard` | mais rápida (1.3 s de queda) | 55 / 110 ms |
 
 ---
 
