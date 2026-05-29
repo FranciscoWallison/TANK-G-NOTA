@@ -38,7 +38,7 @@ class AppState:
     tuning: str = "standard"
     difficulty: str = "normal"
     monitor_on: bool = False
-    monitor_gain: float = 2.0
+    monitor_gain: float = 12.0
     chart: str = DEFAULT_CHART
 
     @classmethod

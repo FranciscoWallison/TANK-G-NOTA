@@ -68,9 +68,13 @@ class MenuScreen:
 
     def _toggle_monitor(self):
         st = self.app.state
-        st.monitor_on = not st.monitor_on
+        want = not st.monitor_on
         if self.app.engine is not None:
-            self.app.engine.set_monitor(st.monitor_on, st.monitor_gain)
+            self.app.engine.set_monitor(want, st.monitor_gain)
+            # reflete o estado REAL (full-duplex pode falhar e voltar p/ OFF)
+            st.monitor_on = self.app.engine.monitor_on
+        else:
+            st.monitor_on = want
         st.save()
 
     def _cycle_diff(self):
@@ -79,11 +83,23 @@ class MenuScreen:
         st.difficulty = order[(order.index(st.difficulty) + 1) % len(order)]
         st.save()
 
+    def _adjust_vol(self, delta):
+        st = self.app.state
+        st.monitor_gain = max(1.0, min(40.0, round(st.monitor_gain + delta, 1)))
+        if self.app.engine is not None:
+            self.app.engine.monitor_gain = st.monitor_gain  # aplica ao vivo
+        st.save()
+
     def handle_event(self, ev):
         for b in self.buttons:
             b.handle_event(ev)
         self.btn_monitor.handle_event(ev)
         self.btn_diff.handle_event(ev)
+        if ev.type == pygame.KEYDOWN:
+            if ev.key in (pygame.K_PLUS, pygame.K_EQUALS, pygame.K_KP_PLUS):
+                self._adjust_vol(+2)
+            elif ev.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                self._adjust_vol(-2)
 
     def update(self):
         pass
@@ -105,6 +121,8 @@ class MenuScreen:
         mon = "ON" if not eng else ("ON" if eng.monitor_on else "OFF")
         mon_avail = "" if (eng and eng.monitor_available) else "  (indisponível)"
         ui.draw_text(surf, f"Monitor (fone): {mon}{mon_avail}", self.f_sm, ui.DIM, midtop=(W / 2, 205))
+        ui.draw_text(surf, f"Volume monitor: {self.app.state.monitor_gain:.0f}x   (+/− ajusta)",
+                     self.f_sm, ui.DIM, midtop=(W / 2, 224))
 
         for b in self.buttons:
             b.draw(surf)

@@ -29,7 +29,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 class AudioEngine:
     def __init__(self, device=None, gain=40.0, output_device=None,
-                 monitor_on=False, monitor_gain=2.0,
+                 monitor_on=False, monitor_gain=12.0,
                  silence_rms=0.004, attack_rms=0.015):
         self.device = device if device is not None else find_tank_g_device()
         self.output_device = output_device
@@ -44,6 +44,7 @@ class AudioEngine:
         self._running = False
         self.stream = None
         self.monitor_available = True   # vira False se full-duplex falhar
+        self.monitor_error = ""         # última mensagem de erro do full-duplex
 
         self._cur_midi = None
         self._cur_freq = 0.0
@@ -90,19 +91,31 @@ class AudioEngine:
         self.stream.start()
 
     def _open_duplex(self):
-        try:
-            self.stream = sd.Stream(
-                device=(self.device, self.output_device),
-                samplerate=SAMPLE_RATE, blocksize=HOP_SIZE,
-                channels=(1, 2), callback=self._cb_duplex,
-            )
-            self.stream.start()
-            self.monitor_available = True
-        except Exception:
-            # full-duplex indisponível → cai pra captura simples
-            self.monitor_available = False
-            self.monitor_on = False
-            self._open_input()
+        # tenta a saída escolhida; se falhar (ex.: HS317 em host API incompatível),
+        # tenta a saída PADRÃO do sistema antes de desistir do monitor.
+        candidates = [self.output_device]
+        if self.output_device is not None:
+            candidates.append(None)
+        last_err = None
+        for out in candidates:
+            try:
+                self.stream = sd.Stream(
+                    device=(self.device, out),
+                    samplerate=SAMPLE_RATE, blocksize=HOP_SIZE,
+                    channels=(1, 2), callback=self._cb_duplex,
+                )
+                self.stream.start()
+                self.monitor_available = True
+                self.monitor_error = ""
+                self.output_device = out   # usa o que abriu
+                return
+            except Exception as e:
+                last_err = e
+        # nenhum funcionou → captura simples (monitor off)
+        self.monitor_available = False
+        self.monitor_on = False
+        self.monitor_error = f"{type(last_err).__name__}: {str(last_err)[:90]}"
+        self._open_input()
 
     def _reopen(self):
         if self.stream is not None:
