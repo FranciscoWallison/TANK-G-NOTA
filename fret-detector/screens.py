@@ -292,6 +292,7 @@ class TrainScreen:
     def __init__(self, app):
         self.app = app
         self.f_big = ui.font(96, bold=True)
+        self.f_pos = ui.font(56, bold=True)   # posição (SOLTA / CASA N) — cabe na largura
         self.f = ui.font(22)
         self.f_sm = ui.font(15)
         self.f_title = ui.font(26, bold=True)
@@ -419,20 +420,29 @@ class TrainScreen:
 
     def _draw_intro(self, surf):
         W = self.app.width
-        ui.draw_text(surf, "Treino", self.f_title, ui.FG, midtop=(W / 2, 30))
+        ui.draw_text(surf, "Treino", self.f_title, ui.FG, midtop=(W / 2, 26))
         eng = self.app.engine
         if eng and eng.has_calibration():
-            st = "✓ guitarra calibrada"
-            col = ui.GREEN
+            st, col = "✓ guitarra calibrada", ui.GREEN
         elif eng and eng.calibration_incompatible():
-            st = "⚠ calibração desatualizada — recalibre"
-            col = ui.YELLOW
+            st, col = "⚠ calibração desatualizada — recalibre", ui.YELLOW
         else:
-            st = "sem calibração — comece pela calibração guiada"
-            col = ui.DIM
-        ui.draw_text(surf, st, self.f_sm, col, midtop=(W / 2, 80))
-        ui.draw_text(surf, "Dica: ponha o som LIMPO (BYPASS) no TANK-G", self.f_sm, ui.DIM,
-                     midtop=(W / 2, 200))
+            st, col = "ainda sem calibração — comece pela calibração guiada", ui.DIM
+        ui.draw_text(surf, st, self.f_sm, col, midtop=(W / 2, 70))
+
+        # explicação curta (linha a linha — sem quebra automática)
+        expl = [
+            "Calibração guiada: você toca cada corda em algumas casas e forças;",
+            "o app aprende o timbre da SUA guitarra e passa a reconhecer",
+            "corda, casa e se a nota é solta ou pressionada — inclusive no jogo.",
+        ]
+        y = 120
+        for line in expl:
+            ui.draw_text(surf, line, self.f_sm, ui.FG, midtop=(W / 2, y))
+            y += 24
+        ui.draw_text(surf, "Dica: ponha o som LIMPO (BYPASS) no TANK-G antes de calibrar.",
+                     self.f_sm, ui.YELLOW, midtop=(W / 2, y + 6))
+
         self.btn_calib.draw(surf)
         self.btn_live.draw(surf)
         self.btn_menu.draw(surf)
@@ -451,16 +461,29 @@ class TrainScreen:
             s, f, dyn, exp_midi = self._expected()
             casa = "SOLTA" if f == 0 else f"CASA {f}"
             col = ui.LANE_COLORS[6 - s]
-            ui.draw_text(surf, f"Corda {STRING_NAME[s]}", self.f, col, midtop=(W / 2, 130))
-            ui.draw_text(surf, f"{casa}  ·  palhetada {dyn}", self.f_big, col, center=(W / 2, 230))
-            ui.draw_text(surf, f"({midi_to_note(exp_midi)})", self.f, ui.DIM, center=(W / 2, 300))
-            ui.draw_text(surf, self.status, self.f_sm, ui.FG, center=(W / 2, 360))
+
+            # instrução clara
+            ui.draw_text(surf, "Toque a posição abaixo — a captura é automática",
+                         self.f_sm, ui.DIM, midtop=(W / 2, 96))
+
+            # posição em linhas separadas e dimensionadas (não estoura a largura)
+            ui.draw_text(surf, f"Corda {STRING_NAME[s]}", self.f, col, midtop=(W / 2, 132))
+            ui.draw_text(surf, casa, self.f_pos, col, center=(W / 2, 215))
+            ui.draw_text(surf, f"palhetada {dyn}", self.f, ui.ACCENT, center=(W / 2, 272))
+            ui.draw_text(surf, f"nota esperada: {midi_to_note(exp_midi)}",
+                         self.f_sm, ui.DIM, center=(W / 2, 306))
+
+            # status (verde se ok, amarelo se pedir repetir)
+            scol = ui.GREEN if self.status.startswith("✓") else (
+                ui.YELLOW if ("novo" in self.status or "⚠" in self.status) else ui.FG)
+            ui.draw_text(surf, self.status, self.f_sm, scol, center=(W / 2, 348))
+
             if self.last_detect:
                 d = self.last_detect
-                tag = "SOLTA" if d["is_open"] else "PRESSIONADA"
-                ui.draw_text(surf, f"última: {d['note']} · {tag} · {d['dyn']}",
-                             self.f_sm, ui.DIM, center=(W / 2, 392))
-            ui.draw_text(surf, "[S] pular   [R] repetir anterior   ESC cancela",
+                tag = "solta" if d["is_open"] else "pressionada"
+                ui.draw_text(surf, f"última capturada: {d['note']} · {tag} · {d['dyn']}",
+                             self.f_sm, ui.DIM, center=(W / 2, 380))
+            ui.draw_text(surf, "[S] pular   ·   [R] repetir anterior   ·   ESC cancela",
                          self.f_sm, ui.DIM, midtop=(W / 2, self.app.height - 92))
         self._sub_back.draw(surf)
 
