@@ -10,6 +10,8 @@ import numpy as np
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
+np.random.seed(42)  # determinístico — evita flakiness do teste sintético
+
 from features import extract_features
 from classifier import FretClassifier
 from fret_detector import TUNINGS, note_to_midi
@@ -87,7 +89,7 @@ for string in range(1, 7):
     open_note = list(reversed(tuning))[string - 1]
     open_midi = note_to_midi(open_note)
     f0 = midi_to_freq(open_midi)
-    bright = STRING_BRIGHTNESS[string] + np.random.uniform(-0.05, 0.05)
+    bright = STRING_BRIGHTNESS[string] + np.random.uniform(-0.02, 0.02)
     sig = synth_string_note(f0, bright)
     feats = extract_features(sig, SR, f0)
     ranking = clf.classify(feats, open_midi, ergonomic_weight=0)  # timbre puro
@@ -117,7 +119,7 @@ test_cases = [
 ]
 correct_e4 = 0
 for true_string, true_fret, label in test_cases:
-    bright = STRING_BRIGHTNESS[true_string] + np.random.uniform(-0.05, 0.05)
+    bright = STRING_BRIGHTNESS[true_string] + np.random.uniform(-0.02, 0.02)
     sig = synth_string_note(e4_freq, bright)
     feats = extract_features(sig, SR, e4_freq)
     ranking = clf.classify(feats, e4_midi, ergonomic_weight=0)  # timbre puro

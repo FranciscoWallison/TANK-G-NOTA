@@ -2,9 +2,28 @@
 
 Detector de nota + corda/casa + **afinador visual** em tempo real usando o **TANK-G** (ou qualquer entrada de áudio) como input.
 
+> 🎛️ **Studio** (`studio.py`): app único com menu — dispositivo, afinador, treino, velocidade, monitor pelo fone e o jogo, tudo numa janela. **Comece por aqui.**
 > 🎯 **Tuner**: afinador visual GUI (Tkinter) — nota grande, agulha de cents, cores.
 > 📡 **v1**: detecta a **nota** e mostra **todas** as casas possíveis (até 6).
 > 🧠 **v2**: após **calibrar a sua guitarra** (~5 min), tenta adivinhar **a corda+casa exata** que você está tocando, com **modo aprendizado** (você corrige, ele aprende).
+
+---
+
+## 🎛️ TANK-G Studio (app unificado)
+
+```powershell
+python studio.py                 # auto-detecta o TANK-G
+python studio.py --device 2 --gain 40
+```
+
+Menu com: **Dispositivo** (identifica o TANK-G + escolhe o fone), **Afinador**, **Treino** (valida a nota tocada + dica de corda/casa), **Monitor** (reproduz a guitarra no fone do PC — full-duplex), **Velocidade** (easy/normal/hard) e **Jogar música**. **ESC** volta ao menu. Config salva em `settings.json`.
+
+| Peça | Arquivo |
+|------|---------|
+| App + estado + navegação | `studio.py` |
+| Telas (Menu/Device/Tuner/Train) | `screens.py` |
+| Helpers de UI Pygame | `ui.py` |
+| Monitor pelo fone (full-duplex) | `audio_engine.py` |
 
 ---
 
@@ -251,6 +270,7 @@ python game.py --list                                   # músicas embutidas
 - [x] **v1** — Detecção de nota + lista de posições possíveis ✅
 - [x] **v2** — Calibração + classificador + modo aprendizado ✅
 - [x] **v3** — Jogo Guitar Hero (onset + julgamento de timing) ✅
+- [x] **v4** — App unificado TANK-G Studio (menu + monitor pelo fone) ✅
 - [ ] Trilha/metrônomo tocando junto no jogo
 - [ ] Editor de chart / importar MIDI/tablatura
 - [ ] Polifonia (acordes)

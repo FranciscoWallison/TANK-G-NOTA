@@ -64,8 +64,11 @@ Se o timing parecer adiantado/atrasado com a guitarra, ajuste `--audio-offset-ms
 
 ## ✨ Funcionalidades principais
 
+> 🚀 **Comece por aqui:** `python fret-detector/studio.py` abre o **TANK-G Studio** — um app único com menu que reúne tudo (dispositivo, afinador, treino, velocidade, monitor pelo fone) antes de cair numa música.
+
 | Ferramenta | Arquivo | O que faz |
 |-----------|---------|-----------|
+| 🎛️ **TANK-G Studio (app único)** | `fret-detector/studio.py` | Hub com menu: identifica o TANK-G, afinador, treino (validar nota), velocidade, monitor pelo fone, e joga a música — tudo numa janela. |
 | 🎯 **Afinador visual** | `fret-detector/tuner.py` | GUI com nota grande, agulha de cents e cores (verde/amarelo/vermelho). Suporta standard, Eb, Drop D/C/B/A. |
 | 📡 **Detector de nota** | `fret-detector/fret_detector.py` | Detecta a nota tocada e lista **todas** as posições possíveis no braço. |
 | 🧠 **Classificador corda+casa** | `fret-detector/fret_detector.py --classify` | Após calibrar, adivinha **a corda e casa exata** pelo timbre. Modo aprendizado embutido. |
@@ -97,7 +100,30 @@ pip install -r requirements.txt
 
 ---
 
-## 🎯 Uso
+## 🎛️ App unificado: TANK-G Studio
+
+A forma recomendada de usar — tudo numa janela só:
+
+```bash
+python studio.py                 # auto-detecta o TANK-G
+python studio.py --device 2 --gain 40
+```
+
+No menu você tem:
+- **Dispositivo** — identifica o TANK-G (entrada) e escolhe a saída (fone); nível de sinal ao vivo.
+- **Afinador** — agulha de cents com cores.
+- **Treino (validar nota)** — mostra a nota tocada + a dica de corda/casa.
+- **Monitor (fone)** — liga/desliga; o app **reproduz a guitarra no seu fone do PC**.
+- **Velocidade** — easy / normal / hard (vai pro jogo).
+- **Jogar música** — entra no Guitar Hero com as configs escolhidas. **ESC** volta ao menu.
+
+As escolhas ficam salvas em `settings.json`.
+
+> As ferramentas abaixo também funcionam **standalone** (cada uma na sua janela), se preferir.
+
+---
+
+## 🎯 Uso (ferramentas standalone)
 
 ### 1. Descobrir o dispositivo de entrada
 
@@ -145,13 +171,16 @@ No modo `--classify`:
 ```
 TANK-G-NOTA/
 ├── fret-detector/          ← as ferramentas (código Python)
-│   ├── tuner.py            ← afinador visual (GUI Tkinter)
-│   ├── fret_detector.py    ← detector + classificador
+│   ├── studio.py           ← ⭐ APP UNIFICADO (menu: dispositivo/afinador/treino/jogo)
+│   ├── screens.py          ← telas do hub (Menu, Device, Tuner, Train)
+│   ├── ui.py               ← helpers de UI Pygame (Button, texto, paleta)
+│   ├── tuner.py            ← afinador visual standalone (Tkinter)
+│   ├── fret_detector.py    ← detector + classificador (YIN + correção de oitava)
 │   ├── calibrate.py        ← calibração da guitarra
 │   ├── features.py         ← extração de timbre (FFT)
 │   ├── classifier.py       ← k-NN + aprendizado online
-│   ├── game.py             ← jogo Guitar Hero (Pygame)
-│   ├── audio_engine.py     ← captura + pitch + onset (p/ o jogo)
+│   ├── game.py             ← jogo Guitar Hero (GameScreen Pygame)
+│   ├── audio_engine.py     ← captura + pitch + onset + MONITOR (full-duplex)
 │   ├── charts.py           ← músicas/sequências do jogo
 │   ├── list_devices.py     ← lista dispositivos de áudio
 │   ├── level_monitor.py    ← debug de nível de sinal
@@ -194,6 +223,7 @@ TANK-G-NOTA/
 - [x] Classificador corda+casa com calibração e aprendizado
 - [x] Correção de oitava + viés de ergonomia
 - [x] **Jogo Guitar Hero** com detecção de ataque (onset) e julgamento de timing
+- [x] **App unificado (TANK-G Studio)**: menu + dispositivo + afinador + treino + monitor pelo fone + jogo
 - [ ] Trilha de áudio / metrônomo tocando junto no jogo
 - [ ] Editor de chart / importar de MIDI ou tablatura
 - [ ] Polifonia (acordes)
