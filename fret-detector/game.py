@@ -80,6 +80,7 @@ class GameNote:
     name: str
     judged: bool = False
     result: str | None = None
+    pos_ok: bool | None = None   # validação de posição (solta/pressionada)
 
 
 def build_notes(chart, tuning_name: str) -> list[GameNote]:
@@ -101,7 +102,7 @@ class GameScreen:
     Reusada pelo standalone (game.py) e pelo app integrado (studio.py)."""
 
     def __init__(self, chart, tuning_name, engine=None, audio_offset=0.0,
-                 show_hint=True, mock=False, difficulty="normal"):
+                 show_hint=True, mock=False, difficulty="normal", validate_open=False):
         pygame.font.init()
         self.chart = chart
         self.tuning_name = tuning_name
@@ -109,6 +110,7 @@ class GameScreen:
         self.audio_offset = audio_offset
         self.show_hint = show_hint
         self.mock = mock
+        self.validate_open = validate_open and engine is not None
 
         diff = DIFFICULTY[difficulty]
         self.difficulty = difficulty
@@ -137,6 +139,9 @@ class GameScreen:
         self.counts = {"perfect": 0, "good": 0, "miss": 0}
         self.flashes = []
         self.finished_at = None
+        self._await_note = None       # nota aguardando validação de posição
+        self.pos_ok = 0
+        self.pos_bad = 0
 
     # ---- tempo ----
     def elapsed(self) -> float:
@@ -162,6 +167,8 @@ class GameScreen:
             best.judged = True
             best.result = res
             self._register(res, best.lane)
+            if self.validate_open:
+                self._await_note = best   # valida posição quando a nota completar
 
     def _register(self, result: str, lane: int):
         self.counts[result] += 1
@@ -214,6 +221,22 @@ class GameScreen:
             onset = self.engine.poll_onset()
             if onset is not None and self.elapsed() > -0.5:
                 self.process_onset(onset[0], onset[1])
+            # validação de posição (solta/pressionada) quando a nota completa (~0.5s)
+            if self.validate_open:
+                note = self.engine.poll_note()   # sempre drena (evita nota velha acumular)
+                if note is not None and self._await_note is not None:
+                    wave, f0, _ts = note
+                    res = self.engine.analyze_note(wave, f0, self.tuning_name)
+                    # só aplica se a nota capturada é a que estamos esperando (toques rápidos)
+                    if abs(res["midi"] - self._await_note.midi) <= 1:
+                        expected_open = (self._await_note.fret == 0)
+                        ok = (res["is_open"] == expected_open)
+                        self._await_note.pos_ok = ok
+                        self.flashes.append([self._await_note.lane,
+                                             "posok" if ok else "posbad", time.time() + 0.5])
+                        self.pos_ok += int(ok)
+                        self.pos_bad += int(not ok)
+                        self._await_note = None
         self._check_misses()
         if self.song_done() and self.finished_at is None:
             self.finished_at = time.time()
@@ -259,11 +282,16 @@ class GameScreen:
         self.flashes = [f for f in self.flashes if f[2] > now]
         for lane, result, _ in self.flashes:
             cx = self._lane_x(lane) + self.lane_w / 2
-            col = {"perfect": ui.GREEN, "good": ui.YELLOW, "miss": ui.RED}[result]
-            ui.draw_text(surf, result.upper(), self.font_sm, col,
-                         center=(cx, HIT_LINE_Y - 48))
-            if result != "miss":
-                pygame.draw.circle(surf, col, (int(cx), HIT_LINE_Y), 26, 5)
+            if result in ("perfect", "good", "miss"):
+                col = {"perfect": ui.GREEN, "good": ui.YELLOW, "miss": ui.RED}[result]
+                ui.draw_text(surf, result.upper(), self.font_sm, col,
+                             center=(cx, HIT_LINE_Y - 48))
+                if result != "miss":
+                    pygame.draw.circle(surf, col, (int(cx), HIT_LINE_Y), 26, 5)
+            else:  # selo de posição (solta/pressionada)
+                ok = result == "posok"
+                ui.draw_text(surf, "✓ pos" if ok else "⚠ pos", self.font_sm,
+                             ui.GREEN if ok else ui.YELLOW, center=(cx, HIT_LINE_Y - 74))
 
     def _draw_hud(self, surf):
         ui.draw_text(surf, f"Score {self.score}", self.font_hud, ui.FG, topleft=(16, 12))
@@ -276,6 +304,9 @@ class GameScreen:
         c = self.counts
         ui.draw_text(surf, f"P {c['perfect']} G {c['good']} Miss {c['miss']}",
                      self.font_sm, ui.DIM, topleft=(WIDTH - 180, 44))
+        if self.validate_open:
+            ui.draw_text(surf, f"Posição ✓{self.pos_ok} ⚠{self.pos_bad}",
+                         self.font_sm, ui.DIM, topleft=(16, 70))
 
     def _draw_status(self, surf):
         if self.engine is None:
@@ -337,6 +368,8 @@ def main():
     parser.add_argument("--difficulty", default="normal", choices=list(DIFFICULTY.keys()))
     parser.add_argument("--audio-offset-ms", type=float, default=80.0)
     parser.add_argument("--no-hint", action="store_true")
+    parser.add_argument("--validate-open", action="store_true",
+                        help="valida tambem se a nota foi tocada solta/pressionada")
     parser.add_argument("--mock", action="store_true")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
@@ -376,7 +409,8 @@ def main():
     pygame.display.set_caption(f"TANK-G-NOTA — {chart.name}")
     clock = pygame.time.Clock()
     gs = GameScreen(chart, chart.tuning, engine=engine, audio_offset=audio_offset,
-                    show_hint=not args.no_hint, mock=args.mock, difficulty=args.difficulty)
+                    show_hint=not args.no_hint, mock=args.mock, difficulty=args.difficulty,
+                    validate_open=args.validate_open)
     try:
         running = True
         while running:

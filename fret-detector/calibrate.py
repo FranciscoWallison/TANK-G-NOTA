@@ -61,15 +61,17 @@ def capture_one_sample(stream_buffer: list, target_midi: int, target_freq: float
         print("❌ áudio curto demais")
         return None
 
-    # Janela de BUFFER_SIZE com mais energia (pega o ataque/sustain, ignora silêncio)
+    # Janela de BUFFER_SIZE com mais energia (p/ YIN) + offset do onset (p/ features)
     best_rms = 0.0
     best_window = audio[:BUFFER_SIZE]
+    best_offset = 0
     for offset in range(0, len(audio) - BUFFER_SIZE, BUFFER_SIZE // 4):
         win = audio[offset : offset + BUFFER_SIZE]
         rms = float(np.sqrt(np.mean(win * win)))
         if rms > best_rms:
             best_rms = rms
             best_window = win
+            best_offset = offset
 
     if best_rms < 1e-5:
         print(f"❌ silêncio (pico {best_rms:.5f}) — aumente --gain ou o volume USB no M-EFCS")
@@ -80,7 +82,6 @@ def capture_one_sample(stream_buffer: list, target_midi: int, target_freq: float
         print(f"❌ sem pitch claro (pico rms {best_rms:.4f}) — toque mais firme")
         return None
 
-    # Validação: a freq detectada deve estar perto do esperado (±150 cents)
     detected_midi = freq_to_midi(freq)
     cents_off = (detected_midi - target_midi) * 100
     if abs(cents_off) > 150:
@@ -90,7 +91,19 @@ def capture_one_sample(stream_buffer: list, target_midi: int, target_freq: float
         if ans != "s":
             return None
 
-    feats = extract_features(best_window, SAMPLE_RATE, freq)
+    # Janela da NOTA INTEIRA (~0.5s) a partir do onset — features v2 precisam do decay
+    onset_off = best_offset
+    for offset in range(0, len(audio) - BUFFER_SIZE, BUFFER_SIZE // 4):
+        win = audio[offset : offset + BUFFER_SIZE]
+        if float(np.sqrt(np.mean(win * win))) > 0.3 * best_rms:
+            onset_off = offset
+            break
+    note_n = int(0.5 * SAMPLE_RATE)
+    note_wave = audio[onset_off : onset_off + note_n]
+    if len(note_wave) < int(0.45 * SAMPLE_RATE):   # onset perto do fim → usa o final
+        note_wave = audio[-note_n:]
+
+    feats = extract_features(note_wave, SAMPLE_RATE, freq)
     print(f"✓ {midi_to_note(int(round(detected_midi)))} @ {freq:.1f}Hz "
           f"({cents_off:+.0f}¢)  rms={best_rms:.4f}")
     return feats, freq, best_rms

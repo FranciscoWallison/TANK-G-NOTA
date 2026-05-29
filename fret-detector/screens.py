@@ -4,13 +4,17 @@ Cada tela recebe o `app` (studio) e expõe handle_event/update/draw(surf).
 Navega via app.go("menu"|"device"|"tuner"|"train"|"game").
 """
 from collections import deque
+from pathlib import Path
+import numpy as np
 import pygame
 import sounddevice as sd
 
 import ui
 from fret_detector import (
-    freq_to_midi, midi_to_note, TUNINGS, find_tank_g_device,
+    freq_to_midi, midi_to_note, note_to_midi, TUNINGS, find_tank_g_device,
 )
+
+SCRIPT_DIR = Path(__file__).resolve().parent
 
 CENTS_GREEN = 5
 CENTS_YELLOW = 15
@@ -275,40 +279,226 @@ class TunerScreen:
 
 
 # ============================================================ TREINO
+CAL_FRETS = [0, 5, 7, 12]
+DYNAMICS = ["FRACA", "MÉDIA", "FORTE"]
+STRING_NAME = {6: "6ª (E grave)", 5: "5ª (A)", 4: "4ª (D)",
+               3: "3ª (G)", 2: "2ª (B)", 1: "1ª (E aguda)"}
+
+
 class TrainScreen:
+    """Treino: assistente de calibração GUIADO (corda × casa × dinâmica) que valida
+    e salva, + modo VALIDAÇÃO LIVRE (mostra nota + corda + casa + solta/pressionada)."""
+
     def __init__(self, app):
         self.app = app
-        self.f_big = ui.font(110, bold=True)
+        self.f_big = ui.font(96, bold=True)
         self.f = ui.font(22)
         self.f_sm = ui.font(15)
         self.f_title = ui.font(26, bold=True)
-        self.btn_back = ui.Button((20, app.height - 60, 160, 42), "‹ Voltar (ESC)", lambda: app.go("menu"), fnt=self.f_sm)
+        self.mode = "intro"          # intro | calib | done | live
+        self.clf = None
+        self.steps = []
+        self.step_i = 0
+        self.tries = 0
+        self.status = ""
+        self.last_detect = None
+        self._sub_back = ui.Button((20, app.height - 56, 150, 40), "‹ Voltar", self._to_menu_or_intro, fnt=self.f_sm)
+        cx = app.width / 2
+        self.btn_calib = ui.Button((cx - 170, 250, 340, 56), "🎙  Calibração guiada", self._start_calib)
+        self.btn_live = ui.Button((cx - 170, 320, 340, 56), "🎸  Validação livre", lambda: self._set_mode("live"))
+        self.btn_menu = ui.Button((cx - 170, 390, 340, 50), "‹ Voltar ao menu", lambda: app.go("menu"))
 
+    # ---- navegação ----
+    def _set_mode(self, m):
+        self.mode = m
+        if self.app.engine:
+            while self.app.engine.poll_note() is not None:  # descarta notas pendentes
+                pass
+
+    def _to_menu_or_intro(self):
+        if self.mode in ("calib", "done", "live"):
+            self.mode = "intro"
+        else:
+            self.app.go("menu")
+
+    # ---- calibração ----
+    def _start_calib(self):
+        from classifier import FretClassifier
+        self.clf = FretClassifier()
+        self.clf.tuning_name = self.app.state.tuning
+        self.steps = [(s, f, dyn) for s in range(6, 0, -1)
+                      for f in CAL_FRETS for dyn in DYNAMICS]
+        self.step_i = 0
+        self.tries = 0
+        self.status = "Toque a posição indicada (som LIMPO / BYPASS)"
+        self.last_detect = None
+        self._set_mode("calib")
+
+    def _expected(self):
+        s, f, dyn = self.steps[self.step_i]
+        tuning = TUNINGS[self.app.state.tuning]
+        open_note = list(reversed(tuning))[s - 1]
+        return s, f, dyn, note_to_midi(open_note) + f
+
+    def _is_outlier(self, s, f, feats):
+        vecs = self.clf.samples.get((s, f), [])
+        if len(vecs) < 3:   # com poucas amostras o desvio é pouco confiável
+            return False
+        arr = np.stack(vecs)
+        mean = arr.mean(axis=0)
+        std = arr.std(axis=0)
+        std[std < 1e-6] = 1.0
+        return float(np.mean(np.abs((feats - mean) / std))) > 3.0
+
+    def _update_calib(self):
+        eng = self.app.engine
+        if eng is None:
+            self.status = "Sem áudio — configure em Dispositivo."
+            return
+        note = eng.poll_note()
+        if note is None:
+            return
+        wave, f0, ts = note
+        s, f, dyn, exp_midi = self._expected()
+        det_f = freq_to_midi(f0)
+        cents = (det_f - exp_midi) * 100
+        if abs(cents) > 150:
+            self.status = (f"Detectei {midi_to_note(int(round(det_f)))} ({cents:+.0f}¢) — "
+                           f"esperado {midi_to_note(exp_midi)}. Toque de novo.")
+            return
+        res = eng.analyze_note(wave, f0, self.app.state.tuning)
+        feats = res["features"]
+        if self._is_outlier(s, f, feats) and self.tries < 2:
+            self.tries += 1
+            self.status = "⚠ amostra divergente — repita com a MESMA força"
+            return
+        self.clf.add_calibration_sample(s, f, feats)
+        self.last_detect = {"note": midi_to_note(exp_midi),
+                            "is_open": res["is_open"], "dyn": dyn}
+        self.tries = 0
+        self.step_i += 1
+        if self.step_i >= len(self.steps):
+            self._finish_calib()
+        else:
+            self.status = "✓ capturado! Próxima posição."
+
+    def _finish_calib(self):
+        self.clf.save_calibration(SCRIPT_DIR / "calibration.json")
+        if self.app.engine:
+            self.app.engine.reload_classifier()
+        self.mode = "done"
+
+    # ---- loop ----
     def handle_event(self, ev):
-        self.btn_back.handle_event(ev)
+        if self.mode == "intro":
+            self.btn_calib.handle_event(ev)
+            self.btn_live.handle_event(ev)
+            self.btn_menu.handle_event(ev)
+            return
+        self._sub_back.handle_event(ev)
+        if self.mode == "calib" and ev.type == pygame.KEYDOWN:
+            if ev.key == pygame.K_s and self.step_i < len(self.steps):   # pular
+                self.step_i += 1
+                self.tries = 0
+                if self.step_i >= len(self.steps):
+                    self._finish_calib()
+            elif ev.key == pygame.K_r and self.step_i > 0:               # repetir anterior
+                self.step_i -= 1
+                self.tries = 0
+        if self.mode == "done":
+            self.btn_live.handle_event(ev)
 
     def update(self):
-        pass
+        if self.mode == "calib":
+            self._update_calib()
 
+    # ---- desenho ----
     def draw(self, surf):
         surf.fill(ui.BG)
+        getattr(self, f"_draw_{self.mode}")(surf)
+
+    def _draw_intro(self, surf):
         W = self.app.width
-        ui.draw_text(surf, "Treino — valida a nota tocada", self.f_title, ui.DIM, midtop=(W / 2, 20))
+        ui.draw_text(surf, "Treino", self.f_title, ui.FG, midtop=(W / 2, 30))
         eng = self.app.engine
-        midi, freq = eng.current_pitch() if eng else (None, 0)
-        if midi is None or freq <= 0:
-            ui.draw_text(surf, "—", self.f_big, ui.DIM, center=(W / 2, 210))
-            ui.draw_text(surf, "toque uma nota", self.f_sm, ui.DIM, center=(W / 2, 310))
+        if eng and eng.has_calibration():
+            st = "✓ guitarra calibrada"
+            col = ui.GREEN
+        elif eng and eng.calibration_incompatible():
+            st = "⚠ calibração desatualizada — recalibre"
+            col = ui.YELLOW
         else:
-            ui.draw_text(surf, midi_to_note(midi), self.f_big, ui.ACCENT, center=(W / 2, 200))
-            ui.draw_text(surf, f"{freq:.1f} Hz", self.f, ui.FG, center=(W / 2, 290))
-            hint = eng.classify_current(self.app.state.tuning)
-            if hint:
-                s, f, conf = hint
-                col = ui.LANE_COLORS[6 - s]
-                fl = "solta" if f == 0 else f"casa {f}"
-                conf_txt = f" ({conf*100:.0f}%)" if conf is not None else "  (dica)"
-                ui.draw_text(surf, f"Corda {s} — {fl}{conf_txt}", self.f, col, center=(W / 2, 350))
+            st = "sem calibração — comece pela calibração guiada"
+            col = ui.DIM
+        ui.draw_text(surf, st, self.f_sm, col, midtop=(W / 2, 80))
+        ui.draw_text(surf, "Dica: ponha o som LIMPO (BYPASS) no TANK-G", self.f_sm, ui.DIM,
+                     midtop=(W / 2, 200))
+        self.btn_calib.draw(surf)
+        self.btn_live.draw(surf)
+        self.btn_menu.draw(surf)
+
+    def _draw_calib(self, surf):
+        W = self.app.width
+        total = len(self.steps)
+        done = min(self.step_i, total)
+        ui.draw_text(surf, f"Calibração guiada — {done}/{total}", self.f_title, ui.FG, midtop=(W / 2, 24))
+        # barra de progresso
+        pygame.draw.rect(surf, ui.PANEL, (W / 2 - 250, 64, 500, 10), border_radius=5)
+        if total:
+            pygame.draw.rect(surf, ui.GREEN, (W / 2 - 250, 64, int(500 * done / total), 10), border_radius=5)
+
+        if self.step_i < total:
+            s, f, dyn, exp_midi = self._expected()
+            casa = "SOLTA" if f == 0 else f"CASA {f}"
+            col = ui.LANE_COLORS[6 - s]
+            ui.draw_text(surf, f"Corda {STRING_NAME[s]}", self.f, col, midtop=(W / 2, 130))
+            ui.draw_text(surf, f"{casa}  ·  palhetada {dyn}", self.f_big, col, center=(W / 2, 230))
+            ui.draw_text(surf, f"({midi_to_note(exp_midi)})", self.f, ui.DIM, center=(W / 2, 300))
+            ui.draw_text(surf, self.status, self.f_sm, ui.FG, center=(W / 2, 360))
+            if self.last_detect:
+                d = self.last_detect
+                tag = "SOLTA" if d["is_open"] else "PRESSIONADA"
+                ui.draw_text(surf, f"última: {d['note']} · {tag} · {d['dyn']}",
+                             self.f_sm, ui.DIM, center=(W / 2, 392))
+            ui.draw_text(surf, "[S] pular   [R] repetir anterior   ESC cancela",
+                         self.f_sm, ui.DIM, midtop=(W / 2, self.app.height - 92))
+        self._sub_back.draw(surf)
+
+    def _draw_done(self, surf):
+        W = self.app.width
+        n = self.clf.n_calibrated_positions() if self.clf else 0
+        ui.draw_text(surf, "✓ Calibração salva!", self.f_title, ui.GREEN, midtop=(W / 2, 60))
+        ui.draw_text(surf, f"{n} posições calibradas", self.f, ui.FG, center=(W / 2, 150))
+        ui.draw_text(surf, "O jogo e a validação já usam essa calibração.", self.f_sm, ui.DIM,
+                     center=(W / 2, 190))
+        self.btn_live.draw(surf)
+        self._sub_back.draw(surf)
+
+    def _draw_live(self, surf):
+        W = self.app.width
+        ui.draw_text(surf, "Validação livre — toque uma nota", self.f_title, ui.DIM, midtop=(W / 2, 24))
+        eng = self.app.engine
+        note = eng.poll_note() if eng else None
+        if note is not None:
+            wave, f0, ts = note
+            self.last_detect = eng.analyze_note(wave, f0, self.app.state.tuning)
+        d = self.last_detect
+        if not d or not d.get("ranking"):
+            mp = eng.current_pitch()[0] if eng else None
+            ui.draw_text(surf, midi_to_note(mp) if mp is not None else "—",
+                         self.f_big, ui.DIM if mp is None else ui.ACCENT, center=(W / 2, 200))
+            ui.draw_text(surf, "toque uma nota", self.f_sm, ui.DIM, center=(W / 2, 300))
+        else:
+            s, f, conf = d["ranking"][0]
+            note_name = midi_to_note(d["midi"])
+            col = ui.LANE_COLORS[6 - s]
+            ui.draw_text(surf, note_name, self.f_big, ui.ACCENT, center=(W / 2, 185))
+            fl = "SOLTA" if f == 0 else f"casa {f}"
+            conf_txt = f" ({conf*100:.0f}%)" if conf is not None else " (dica)"
+            ui.draw_text(surf, f"Corda {s} — {fl}{conf_txt}", self.f, col, center=(W / 2, 285))
+            tag = "SOLTA" if d["is_open"] else "PRESSIONADA"
+            tcol = ui.GREEN if d["is_open"] else ui.YELLOW
+            ui.draw_text(surf, tag, self.f, tcol, center=(W / 2, 330))
         src = "com calibração" if (eng and eng.has_calibration()) else "dica ergonômica (sem calibração)"
-        ui.draw_text(surf, src, self.f_sm, ui.DIM, midtop=(W / 2, self.app.height - 90))
-        self.btn_back.draw(surf)
+        ui.draw_text(surf, src, self.f_sm, ui.DIM, midtop=(W / 2, self.app.height - 92))
+        self._sub_back.draw(surf)

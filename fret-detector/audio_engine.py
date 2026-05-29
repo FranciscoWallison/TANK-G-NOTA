@@ -1,16 +1,14 @@
-"""Motor de áudio: captura em thread, detecta pitch (YIN) e ataques (onset),
-e opcionalmente faz MONITOR (reproduz a guitarra no fone do PC, full-duplex).
+"""Motor de áudio: captura em thread, detecta pitch (YIN), ataques (onset),
+captura a NOTA INTEIRA (~0.5s) para features temporais, classifica corda/casa +
+solta/pressionada, e opcionalmente faz MONITOR (reproduz a guitarra no fone do PC).
 
-- poll_onset() -> (midi, ts) | None       # consome 1 ataque (pluck)
-- current_pitch() -> (midi|None, freq)
-- current_rms() -> float                    # nível de sinal (p/ barra de nível)
-- classify_current(tuning) -> (string, fret, conf|None) | None   # dica de corda/casa
-- set_monitor(on, gain=None)                # liga/desliga o passthrough p/ o fone
-- set_output_device(dev)
-
-Quando monitor_on, abre full-duplex (sd.Stream input+output); senão InputStream
-(comportamento leve, usado pelo jogo). Se full-duplex falhar, cai pra InputStream
-e marca monitor_available=False.
+API consumida pelas telas/jogo:
+  poll_onset()  -> (midi, ts) | None        # ataque instantâneo (timing)
+  poll_note()   -> (waveform, f0, ts) | None # nota completa (~0.5s) p/ classificar
+  analyze_note(wave, f0, tuning) -> dict     # features + is_open + ranking
+  classify_current(tuning) -> (s,f,conf)|None
+  current_pitch() / current_rms()
+  set_monitor(on, gain) / set_output_device / set_input_device / reload_classifier
 """
 import threading
 import time
@@ -19,12 +17,14 @@ import numpy as np
 import sounddevice as sd
 
 from fret_detector import (
-    SAMPLE_RATE, HOP_SIZE, MIN_FREQ, MAX_FREQ,
+    SAMPLE_RATE, HOP_SIZE, MIN_FREQ, MAX_FREQ, TUNINGS,
     yin, freq_to_midi, fret_positions, find_tank_g_device,
 )
 
-BUFFER_SIZE = 2048  # ~46 ms
+BUFFER_SIZE = 2048        # ~46 ms — janela do YIN/pitch
+NOTE_WINDOW = 0.5         # s — janela da nota inteira p/ features temporais
 SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_SUSTAIN_THRESHOLD = 0.4   # fallback quando sem calibração
 
 
 class AudioEngine:
@@ -43,18 +43,26 @@ class AudioEngine:
         self._lock = threading.Lock()
         self._running = False
         self.stream = None
-        self.monitor_available = True   # vira False se full-duplex falhar
-        self.monitor_error = ""         # última mensagem de erro do full-duplex
+        self.monitor_available = True
+        self.monitor_error = ""
 
         self._cur_midi = None
         self._cur_freq = 0.0
         self._cur_rms = 0.0
-        self._cur_buf = None            # cópia do buffer no último pitch (p/ classify)
 
         self._armed = True
         self._pending_onset = None
 
-        # classificador opcional (dica de corda/casa)
+        # captura da nota inteira
+        self._note_target = int(NOTE_WINDOW * SAMPLE_RATE)
+        self._note_capturing = False
+        self._note_chunks: list[np.ndarray] = []
+        self._note_collected = 0
+        self._note_f0 = 0.0
+        self._note_ts = 0.0
+        self._pending_note = None             # (wave, f0, ts) consumido por poll_note
+        self._last_note = None                # (wave, f0) p/ classify_current
+
         self._classifier = None
         self._load_classifier()
 
@@ -70,8 +78,26 @@ class AudioEngine:
         except Exception:
             self._classifier = None
 
+    def reload_classifier(self):
+        """Recarrega calibração/correções do disco (após calibrar no Treino)."""
+        self._classifier = None
+        self._load_classifier()
+
     def has_calibration(self) -> bool:
         return self._classifier is not None
+
+    def calibration_incompatible(self) -> bool:
+        """True se existe calibração mas de versão de features antiga."""
+        calib = SCRIPT_DIR / "calibration.json"
+        if self._classifier is not None or not calib.exists():
+            return False
+        try:
+            from classifier import FretClassifier
+            clf = FretClassifier()
+            clf.load(calib)
+            return clf.incompatible
+        except Exception:
+            return False
 
     # ---- ciclo de vida ----
     def start(self):
@@ -91,8 +117,6 @@ class AudioEngine:
         self.stream.start()
 
     def _open_duplex(self):
-        # tenta a saída escolhida; se falhar (ex.: HS317 em host API incompatível),
-        # tenta a saída PADRÃO do sistema antes de desistir do monitor.
         candidates = [self.output_device]
         if self.output_device is not None:
             candidates.append(None)
@@ -107,11 +131,10 @@ class AudioEngine:
                 self.stream.start()
                 self.monitor_available = True
                 self.monitor_error = ""
-                self.output_device = out   # usa o que abriu
+                self.output_device = out
                 return
             except Exception as e:
                 last_err = e
-        # nenhum funcionou → captura simples (monitor off)
         self.monitor_available = False
         self.monitor_on = False
         self.monitor_error = f"{type(last_err).__name__}: {str(last_err)[:90]}"
@@ -167,12 +190,26 @@ class AudioEngine:
 
     # ---- análise comum ----
     def _analyze(self, mono):
-        new_audio = mono * self.gain
-        self.buffer = np.concatenate([self.buffer[len(new_audio):], new_audio])
+        gained = (mono * self.gain).astype(np.float32)
+        self.buffer = np.concatenate([self.buffer[len(gained):], gained])
         rms = float(np.sqrt(np.mean(self.buffer * self.buffer)))
-
         with self._lock:
             self._cur_rms = rms
+
+        # captura da nota em andamento (continua mesmo no silêncio — capta o decay)
+        if self._note_capturing:
+            self._note_chunks.append(gained.copy())
+            self._note_collected += len(gained)
+            if self._note_collected >= self._note_target:
+                wave = np.concatenate(self._note_chunks)[:self._note_target]
+                # recalcula f0 da nota inteira (mais representativo que o do onset)
+                f0 = yin(wave, SAMPLE_RATE)
+                if f0 < MIN_FREQ or f0 > MAX_FREQ:
+                    f0 = self._note_f0
+                with self._lock:
+                    self._pending_note = (wave, f0, self._note_ts)
+                    self._last_note = (wave, f0)
+                self._note_capturing = False
 
         if rms < self.silence_rms:
             self._armed = True
@@ -189,12 +226,19 @@ class AudioEngine:
         with self._lock:
             self._cur_midi = midi
             self._cur_freq = freq
-            self._cur_buf = self.buffer.copy()
 
+        # ataque novo
         if self._armed and rms >= self.attack_rms:
             self._armed = False
+            ts_now = time.time()   # mesmo timestamp p/ onset e nota
             with self._lock:
-                self._pending_onset = (midi, time.time())
+                self._pending_onset = (midi, ts_now)
+            if not self._note_capturing:   # inicia captura da nota
+                self._note_capturing = True
+                self._note_chunks = [gained.copy()]
+                self._note_collected = len(gained)
+                self._note_f0 = freq
+                self._note_ts = ts_now
 
     # ---- callbacks ----
     def _cb_input(self, indata, frames, time_info, status):
@@ -213,12 +257,19 @@ class AudioEngine:
         else:
             outdata.fill(0)
 
-    # ---- API consumida pelas telas/jogo ----
+    # ---- API ----
     def poll_onset(self):
         with self._lock:
             onset = self._pending_onset
             self._pending_onset = None
         return onset
+
+    def poll_note(self):
+        """Retorna a última nota completa (wave, f0, ts) capturada, ou None."""
+        with self._lock:
+            note = self._pending_note
+            self._pending_note = None
+        return note
 
     def current_pitch(self):
         with self._lock:
@@ -228,32 +279,52 @@ class AudioEngine:
         with self._lock:
             return self._cur_rms
 
+    def _sustain_threshold(self, clf) -> float:
+        """Limiar de sustain p/ separar solta de pressionada — calibrado se houver dados."""
+        from features import IDX_SUSTAIN
+        if clf is None:
+            return DEFAULT_SUSTAIN_THRESHOLD
+        opens, frets = [], []
+        for (s, f), vecs in clf.samples.items():
+            for v in vecs:
+                (opens if f == 0 else frets).append(float(v[IDX_SUSTAIN]))
+        if opens and frets:
+            return (float(np.median(opens)) + float(np.median(frets))) / 2.0
+        return DEFAULT_SUSTAIN_THRESHOLD
+
+    def analyze_note(self, note_wave: np.ndarray, f0: float, tuning_name: str) -> dict:
+        """Analisa uma nota completa: features, solta/pressionada e ranking de corda/casa."""
+        from features import extract_features, IDX_SUSTAIN
+        clf = self._classifier   # snapshot (defensivo)
+        feats = extract_features(note_wave, SAMPLE_RATE, f0)
+        midi = int(round(freq_to_midi(f0)))
+        sustain = float(feats[IDX_SUSTAIN])
+        thr = self._sustain_threshold(clf)
+        is_open = sustain > thr
+        open_conf = float(min(1.0, abs(sustain - thr) / (thr + 1e-6)))
+
+        if clf is not None:
+            ranking = clf.classify(feats, midi, tuning_name, open_hint=is_open)
+        else:
+            pos = fret_positions(midi, TUNINGS[tuning_name])
+            if pos:
+                s, f = min(pos, key=lambda sf: (sf[1], sf[0]))
+                ranking = [(s, f, None)]
+            else:
+                ranking = []
+        return {"midi": midi, "features": feats, "is_open": is_open,
+                "open_conf": open_conf, "ranking": ranking}
+
     def classify_current(self, tuning_name: str):
-        """Dica de corda/casa pra nota tocada agora. Usa o classificador (se houver
-        calibração) ou a posição ergonômica. Retorna (string, fret, conf|None)."""
+        """Dica de corda/casa pra última nota completa. (s,f,conf) | None.
+        Retorna None até uma nota completar (sem fallback degradado de buffer curto)."""
         with self._lock:
-            midi = self._cur_midi
-            buf = None if self._cur_buf is None else self._cur_buf
-            freq = self._cur_freq
-        if midi is None:
+            ln = self._last_note
+        if ln is None:
             return None
-        if self._classifier is not None and buf is not None:
-            try:
-                from features import extract_features
-                feats = extract_features(buf, SAMPLE_RATE, freq)
-                ranking = self._classifier.classify(feats, midi, tuning_name)
-                if ranking:
-                    s, f, c = ranking[0]
-                    return s, f, c
-            except Exception:
-                pass
-        # fallback ergonômico: menor casa
-        from fret_detector import TUNINGS
-        pos = fret_positions(midi, TUNINGS[tuning_name])
-        if not pos:
-            return None
-        s, f = min(pos, key=lambda sf: (sf[1], sf[0]))
-        return s, f, None
+        res = self.analyze_note(ln[0], ln[1], tuning_name)
+        r = res["ranking"]
+        return r[0] if r else None
 
 
 # ---- detector de onset reutilizável p/ testes offline (sem sounddevice) ----

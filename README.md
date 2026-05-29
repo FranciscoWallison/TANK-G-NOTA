@@ -112,10 +112,10 @@ python studio.py --device 2 --gain 40
 No menu você tem:
 - **Dispositivo** — identifica o TANK-G (entrada) e escolhe a saída (fone); nível de sinal ao vivo.
 - **Afinador** — agulha de cents com cores.
-- **Treino (validar nota)** — mostra a nota tocada + a dica de corda/casa.
+- **Treino** — **calibração guiada** (corda × casa × 3 dinâmicas, som limpo) que valida e salva; e **validação livre** que mostra a nota tocada + corda + casa + **solta/pressionada**.
 - **Monitor (fone)** — liga/desliga; o app **reproduz a guitarra no seu fone do PC**.
 - **Velocidade** — easy / normal / hard (vai pro jogo).
-- **Jogar música** — entra no Guitar Hero com as configs escolhidas. **ESC** volta ao menu.
+- **Jogar música** — Guitar Hero validando **nota + solta/pressionada** (selo de posição). **ESC** volta ao menu.
 
 As escolhas ficam salvas em `settings.json`.
 
@@ -201,8 +201,10 @@ TANK-G-NOTA/
 | Captura de áudio | `sounddevice` (WASAPI/WDM-KS no Windows) |
 | Detecção de pitch | **YIN** (numpy puro) com **correção de oitava** pra cordas graves |
 | Nota | freq → MIDI → nome (A4 = 440 Hz) |
-| Features de timbre | centroide espectral, rolloff, ZCR, inarmonicidade, razões de harmônicos |
-| Classificação corda+casa | k-NN sobre features calibradas + **viés de ergonomia** (penaliza casas altas) |
+| Features de timbre (v2, 8) | brightness, spectral tilt, centroid/f0, inarmonicidade robusta, riqueza/decay harmônico, **sustain ratio**, attack ratio — sobre a **nota inteira (~0.5s)** |
+| Solta vs pressionada | **sustain ratio** (corda solta sustenta muito mais) — quase determinístico |
+| Classificação corda+casa | k-NN **ponderado** + viés de ergonomia + gate solta/pressionada |
+| Calibração | **guiada** (corda × casa × 3 dinâmicas, som limpo); versionada; detecção de outlier |
 | Aprendizado | correções do usuário salvas e reaplicadas (peso 2×) |
 
 ---

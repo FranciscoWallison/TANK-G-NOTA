@@ -17,8 +17,10 @@ from collections import defaultdict
 from pathlib import Path
 import numpy as np
 
-from features import N_FEATURES
+from features import N_FEATURES, FEATURE_SET, FEATURE_WEIGHTS
 from fret_detector import TUNINGS, note_to_midi, fret_positions, MAX_FRET
+
+assert len(FEATURE_WEIGHTS) == N_FEATURES, "FEATURE_WEIGHTS deve ter N_FEATURES elementos"
 
 MAX_CORRECTIONS = 100
 CORRECTION_WEIGHT = 2.0  # cada correção vale 2x um sample de calibração
@@ -42,19 +44,34 @@ class FretClassifier:
         self.tuning_name: str = "standard"
         self.feature_means: np.ndarray | None = None
         self.feature_stds: np.ndarray | None = None
+        self.incompatible: bool = False   # calibração de versão de features antiga
 
     def load(self, calib_path: str | Path, corrections_path: str | Path | None = None) -> bool:
-        """Carrega calibração + correções. Retorna True se calibração foi carregada."""
+        """Carrega calibração + correções. Retorna True se calibração compatível foi carregada.
+        Se o conjunto de features do arquivo não bate com o código, marca incompatible."""
         calib_path = Path(calib_path)
         if not calib_path.exists():
             return False
         with open(calib_path, encoding="utf-8") as f:
             data = json.load(f)
+
+        # checagem de versão: feature_set OU n_features divergente → incompatível
+        fset = data.get("feature_set")
+        nfeat = data.get("n_features")
+        if (fset is not None and fset != FEATURE_SET) or (nfeat is not None and nfeat != N_FEATURES):
+            self.incompatible = True
+            return False
+
         self.tuning_name = data.get("tuning", "standard")
         for k, payload in data.get("samples", {}).items():
             s, fr = parse_key(k)
             for vec in payload.get("vectors", []):
-                self.samples[(s, fr)].append(np.array(vec, dtype=np.float32))
+                arr = np.array(vec, dtype=np.float32)
+                if arr.shape[0] != N_FEATURES:   # vetor de dimensão errada → incompatível
+                    self.incompatible = True
+                    self.samples.clear()
+                    return False
+                self.samples[(s, fr)].append(arr)
 
         if corrections_path:
             cp = Path(corrections_path)
@@ -69,6 +86,8 @@ class FretClassifier:
         path = Path(path)
         payload = {
             "tuning": self.tuning_name,
+            "feature_set": FEATURE_SET,
+            "n_features": N_FEATURES,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "samples": {
                 key(s, fr): {"vectors": [v.tolist() for v in vecs], "n": len(vecs)}
@@ -170,11 +189,13 @@ class FretClassifier:
         midi_note: int,
         tuning_name: str | None = None,
         ergonomic_weight: float = 1.0,
+        open_hint: bool | None = None,
     ) -> list[tuple[int, int, float]]:
         """Retorna lista ordenada [(string, fret, confidence)].
 
         ergonomic_weight: 0 = só timbre; 1 = aplica viés de ergonomia (default).
-        O viés penaliza casas altas (posições fisicamente improváveis)."""
+        open_hint: se dado (True=solta / False=pressionada), favorece candidatos
+                   coerentes (fret==0 vs fret>0)."""
         tuning = TUNINGS[tuning_name or self.tuning_name]
         candidates = fret_positions(midi_note, tuning)
         if not candidates:
@@ -194,24 +215,31 @@ class FretClassifier:
         for s, f in candidates:
             ref = self._nearest_calibrated(s, f)
             if ref is None:
-                # corda não calibrada: distância "infinita" → conf baixa
                 scored.append((s, f, 1e6))
                 continue
             ref_norm = self._normalize(ref)
-            dist = float(np.linalg.norm(feat_norm - ref_norm))
+            # distância euclidiana PONDERADA (features fortes pesam mais)
+            diff = (feat_norm - ref_norm) * FEATURE_WEIGHTS
+            dist = float(np.linalg.norm(diff))
             scored.append((s, f, dist))
 
-        # converte distância em confiança via softmax inversa
         dists = np.array([d for _, _, d in scored])
         rel = dists - dists.min()
         weights = np.exp(-rel)
 
-        # viés de ergonomia: multiplica peso pela plausibilidade da casa
         if ergonomic_weight > 0:
             priors = np.array([self._ergonomic_prior(f) ** ergonomic_weight
                                for _, f, _ in scored])
             weights = weights * priors
 
+        # gate solta/pressionada: favorece candidatos coerentes com a detecção temporal
+        if open_hint is not None:
+            gate = np.array([1.0 if ((f == 0) == open_hint) else 0.35
+                             for _, f, _ in scored])
+            weights = weights * gate
+
+        if weights.sum() <= 0:
+            weights = np.ones_like(weights)
         confidences = weights / weights.sum()
 
         out = [(s, f, float(conf)) for (s, f, _), conf in zip(scored, confidences)]

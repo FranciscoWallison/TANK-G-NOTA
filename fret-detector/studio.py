@@ -40,6 +40,7 @@ class AppState:
     monitor_on: bool = False
     monitor_gain: float = 12.0
     chart: str = DEFAULT_CHART
+    validation: str = "note+open"   # "note" | "note+open" | "note+fret"
 
     @classmethod
     def load(cls):
@@ -117,6 +118,7 @@ class App:
                 chart, chart.tuning, engine=self.engine,
                 audio_offset=0.08, show_hint=True, mock=(self.engine is None),
                 difficulty=self.state.difficulty,
+                validate_open=(self.state.validation == "note+open"),
             )
 
     def run(self):

@@ -1,61 +1,52 @@
-"""Extração de features de timbre para classificar corda/casa.
+"""Extração de features de timbre para classificar corda/casa e solta/pressionada.
 
-Tudo numpy puro. Recebe buffer de áudio + f0 (já detectado pelo YIN) e retorna
-um vetor de floats representando o "timbre" daquela nota.
+Recebe a NOTA INTEIRA (~0.5s a partir do onset) + o f0 (já detectado pelo YIN)
+e retorna 8 features. Combina features espectrais (sobre uma janela estável) e
+temporais (envelope da nota inteira). Tudo numpy puro.
 
-Features (ordem fixa em FEATURE_NAMES):
-    1. spectral_centroid  — Hz; cordas finas têm centroide mais alto
-    2. spectral_rolloff85 — Hz; onde 85% da energia espectral está acumulada
-    3. zero_crossing_rate — proporção; cordas plain têm ZCR maior
-    4. inharmonicity_B    — adimensional; cordas grossas/curtas têm B maior
-    5. h1_h2_ratio        — dB; energia do 1º harmônico vs 2º
-    6. hi_lo_ratio        — dB; soma harmônicos 4-8 vs 1-3
+Versão do conjunto: FEATURE_SET. Mudou em relação à v1 (6 features) — calibrações
+antigas ficam incompatíveis (o classifier detecta pela contagem/versão).
 """
 import numpy as np
 
+FEATURE_SET = "v2"
+
 FEATURE_NAMES = (
-    "spectral_centroid",
-    "spectral_rolloff85",
-    "zero_crossing_rate",
-    "inharmonicity_B",
-    "h1_h2_ratio",
-    "hi_lo_ratio",
+    "brightness_index",       # energia (2-4kHz)/(500-1k) dB  — qual corda
+    "spectral_tilt",          # slope log-log do espectro       — corda grossa/fina
+    "centroid_normalized",    # centroid / f0                   — corda, invariante a pitch
+    "inharmonicity_b",        # coef. B robusto (h1-h5 + IQR)   — corda + solta/fretted
+    "harmonic_richness",      # nº harmônicos > 10% do f0       — solta/fretted + corda
+    "harmonic_decay_rate",    # média h_n/h_(n+1)               — solta/fretted
+    "sustain_ratio",          # energia(tardia)/energia(ataque) — SOLTA vs fretted (chave)
+    "attack_energy_ratio",    # energia(ataque)/energia total   — solta/fretted
 )
 N_FEATURES = len(FEATURE_NAMES)
 
+# pesos por feature p/ k-NN ponderado (discriminadores fortes pesam mais)
+FEATURE_WEIGHTS = np.array([1.4, 1.3, 1.0, 1.2, 1.0, 1.1, 1.5, 1.1], dtype=np.float32)
 
-def _spectrum(buffer: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
-    window = np.hanning(len(buffer))
-    spec = np.abs(np.fft.rfft(buffer * window))
-    freqs = np.fft.rfftfreq(len(buffer), 1 / sr)
+_SPEC_N = 4096   # janela do espectro (resolução ~10.8 Hz @ 44.1k)
+
+
+# ----------------------------- espectro -----------------------------
+def _stable_window(note_wave: np.ndarray, sr: int, n: int = _SPEC_N) -> np.ndarray:
+    """Janela estável (pula o transiente inicial) p/ análise espectral."""
+    start = min(int(0.03 * sr), max(0, len(note_wave) - n))
+    win = note_wave[start:start + n]
+    if len(win) < n:
+        win = np.pad(win, (0, n - len(win)))
+    return win
+
+
+def _spectrum(window: np.ndarray, sr: int):
+    w = np.hanning(len(window))
+    spec = np.abs(np.fft.rfft(window * w))
+    freqs = np.fft.rfftfreq(len(window), 1 / sr)
     return freqs, spec
 
 
-def _spectral_centroid(freqs: np.ndarray, spec: np.ndarray) -> float:
-    total = spec.sum()
-    if total < 1e-12:
-        return 0.0
-    return float((freqs * spec).sum() / total)
-
-
-def _spectral_rolloff(freqs: np.ndarray, spec: np.ndarray, pct: float = 0.85) -> float:
-    cumulative = np.cumsum(spec)
-    total = cumulative[-1]
-    if total < 1e-12:
-        return 0.0
-    idx = np.searchsorted(cumulative, pct * total)
-    idx = min(idx, len(freqs) - 1)
-    return float(freqs[idx])
-
-
-def _zero_crossing_rate(buffer: np.ndarray) -> float:
-    signs = np.sign(buffer)
-    signs[signs == 0] = 1
-    return float(np.mean(signs[:-1] != signs[1:]))
-
-
-def _peak_near(freqs: np.ndarray, spec: np.ndarray, target_hz: float, search_pct: float = 0.04) -> tuple[float, float]:
-    """Encontra pico do espectro próximo a target_hz. Retorna (freq_real, magnitude)."""
+def _peak_near(freqs, spec, target_hz, search_pct=0.04):
     if target_hz <= 0 or target_hz >= freqs[-1]:
         return target_hz, 0.0
     bw = target_hz * search_pct
@@ -68,65 +59,140 @@ def _peak_near(freqs: np.ndarray, spec: np.ndarray, target_hz: float, search_pct
     return float(sub_freq[i]), float(sub_spec[i])
 
 
-def _inharmonicity(freqs: np.ndarray, spec: np.ndarray, f0: float, n_harmonics: int = 5) -> float:
-    """Estima coeficiente B onde f_n = n * f0 * sqrt(1 + B * n^2).
+# ----------------------------- features espectrais -----------------------------
+def _brightness_index(freqs, spec):
+    bright = spec[(freqs >= 2000) & (freqs <= 4000)].sum()
+    warm = spec[(freqs >= 500) & (freqs <= 1000)].sum()
+    return float(20 * np.log10((bright + 1e-9) / (warm + 1e-9)))
 
-    Linearizado: (f_n / (n*f0))^2 - 1 ≈ B * n^2
-    Usa só primeiros 5 harmônicos pra robustez com sinal saturado.
-    """
-    ns = []
-    ys = []
+
+def _spectral_tilt(freqs, spec, f0):
+    lo = max(2 * f0, 100.0)
+    mask = (freqs > lo) & (spec > 0)
+    if mask.sum() < 4:
+        return 0.0
+    log_f = np.log(freqs[mask])
+    log_s = np.log(spec[mask] + 1e-12)
+    slope = np.polyfit(log_f, log_s, 1)[0]
+    return float(slope)
+
+
+def _centroid_normalized(freqs, spec, f0):
+    total = spec.sum()
+    if total < 1e-12 or f0 <= 0:
+        return 0.0
+    centroid = float((freqs * spec).sum() / total)
+    return centroid / f0
+
+
+def _inharmonicity_robust(freqs, spec, f0, n_harmonics=5):
+    ns, ys = [], []
     for n in range(1, n_harmonics + 1):
         f_real, mag = _peak_near(freqs, spec, n * f0)
         if mag < 1e-9 or f_real <= 0:
             continue
-        ratio = (f_real / (n * f0)) ** 2 - 1.0
-        ns.append(n * n)
-        ys.append(ratio)
+        ns.append(float(n * n))
+        ys.append((f_real / (n * f0)) ** 2 - 1.0)
     if len(ns) < 2:
         return 0.0
-    ns = np.array(ns, dtype=float)
-    ys = np.array(ys, dtype=float)
-    # regressão linear pelo origem: B = sum(n^2 * y) / sum(n^4)
+    ns = np.array(ns)
+    ys = np.array(ys)
+    if len(ys) >= 4:  # remoção de outliers por IQR
+        q1, q3 = np.percentile(ys, [25, 75])
+        iqr = q3 - q1
+        keep = (ys >= q1 - 1.5 * iqr) & (ys <= q3 + 1.5 * iqr)
+        if keep.sum() >= 2:
+            ns, ys = ns[keep], ys[keep]
     denom = float((ns * ns).sum())
     if denom < 1e-12:
         return 0.0
     return float((ns * ys).sum() / denom)
 
 
-def _harmonic_ratios(freqs: np.ndarray, spec: np.ndarray, f0: float) -> tuple[float, float]:
-    """Retorna (h1/h2 em dB, hi/lo em dB)."""
-    mags = []
+def _harmonic_richness(freqs, spec, f0):
+    _, mag_h1 = _peak_near(freqs, spec, f0)
+    if mag_h1 < 1e-9:
+        return 0.0
+    thr = 0.1 * mag_h1
+    count = 0
+    for n in range(1, 16):
+        if n * f0 >= freqs[-1]:
+            break
+        _, mag = _peak_near(freqs, spec, n * f0)
+        if mag >= thr:
+            count += 1
+    return float(count)
+
+
+def _harmonic_decay_rate(freqs, spec, f0):
+    amps = []
     for n in range(1, 9):
         _, mag = _peak_near(freqs, spec, n * f0)
-        mags.append(mag)
-    eps = 1e-9
-    h1, h2 = mags[0], mags[1]
-    h1_h2 = 20 * np.log10((h1 + eps) / (h2 + eps))
-    lo = sum(mags[0:3]) + eps   # h1..h3
-    hi = sum(mags[3:8]) + eps   # h4..h8
-    hi_lo = 20 * np.log10(hi / lo)
-    return float(h1_h2), float(hi_lo)
+        amps.append(max(mag, 1e-9))
+    # razão entre harmônicos consecutivos, clipada p/ não explodir em harmônico ausente
+    ratios = [min(10.0, max(0.1, amps[i] / amps[i + 1])) for i in range(len(amps) - 1)]
+    return float(np.median(ratios)) if ratios else 1.0
 
 
-def extract_features(buffer: np.ndarray, sr: int, f0: float) -> np.ndarray:
-    """Vetor de N_FEATURES floats descrevendo o timbre.
+# ----------------------------- features temporais -----------------------------
+def _energy(seg):
+    return float(np.sum(seg.astype(np.float64) ** 2))
 
-    `f0` deve vir do YIN (já calculado upstream). Se f0 <= 0, todas features são 0.
-    """
-    if f0 <= 0 or len(buffer) < 256:
+
+def _sustain_ratio(note_wave, sr):
+    """energia(tardia 0.3-0.5s) / energia(ataque 0-0.15s). Solta → maior."""
+    n = len(note_wave)
+    early = note_wave[:min(int(0.15 * sr), n)]
+    lo = int(0.3 * sr)
+    hi = int(0.5 * sr)
+    if hi > n:  # nota curta: usa a metade final como "tardia"
+        lo, hi = int(0.6 * n), n
+    late = note_wave[lo:hi]
+    e_early = _energy(early)
+    e_late = _energy(late)
+    if e_early < 1e-12:
+        return 0.0
+    return float(e_late / e_early)
+
+
+def _attack_energy_ratio(note_wave, sr):
+    n = len(note_wave)
+    transient = note_wave[:min(int(0.1 * sr), n)]
+    e_t = _energy(transient)
+    e_total = _energy(note_wave)
+    if e_total < 1e-12:
+        return 0.0
+    return float(e_t / e_total)
+
+
+# ----------------------------- API -----------------------------
+def extract_features(note_wave: np.ndarray, sr: int, f0: float) -> np.ndarray:
+    """Vetor de N_FEATURES floats. `note_wave` deve ser a nota inteira (~0.5s);
+    `f0` vem do YIN. Se f0<=0 ou wave muito curto, retorna zeros."""
+    note_wave = np.asarray(note_wave, dtype=np.float32)
+    if f0 <= 0 or len(note_wave) < 256:
         return np.zeros(N_FEATURES, dtype=np.float32)
 
-    freqs, spec = _spectrum(buffer, sr)
-    centroid = _spectral_centroid(freqs, spec)
-    rolloff = _spectral_rolloff(freqs, spec, 0.85)
-    zcr = _zero_crossing_rate(buffer)
-    inh_b = _inharmonicity(freqs, spec, f0)
-    h1_h2, hi_lo = _harmonic_ratios(freqs, spec, f0)
+    win = _stable_window(note_wave, sr)
+    freqs, spec = _spectrum(win, sr)
 
-    return np.array([centroid, rolloff, zcr, inh_b, h1_h2, hi_lo], dtype=np.float32)
+    return np.array([
+        _brightness_index(freqs, spec),
+        _spectral_tilt(freqs, spec, f0),
+        _centroid_normalized(freqs, spec, f0),
+        _inharmonicity_robust(freqs, spec, f0),
+        _harmonic_richness(freqs, spec, f0),
+        _harmonic_decay_rate(freqs, spec, f0),
+        _sustain_ratio(note_wave, sr),
+        _attack_energy_ratio(note_wave, sr),
+    ], dtype=np.float32)
 
 
 def features_dict(vec: np.ndarray) -> dict[str, float]:
-    """Apenas pra inspeção/debug."""
     return {name: float(vec[i]) for i, name in enumerate(FEATURE_NAMES)}
+
+
+# índices úteis p/ detecção solta/pressionada (usado pelo audio_engine)
+IDX_SUSTAIN = FEATURE_NAMES.index("sustain_ratio")
+IDX_DECAY = FEATURE_NAMES.index("harmonic_decay_rate")
+IDX_ATTACK = FEATURE_NAMES.index("attack_energy_ratio")

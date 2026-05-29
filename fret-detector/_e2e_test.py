@@ -23,16 +23,14 @@ t = np.arange(N) / SR
 
 
 def synth_string_note(f0, brightness, decay=2.0):
-    """Sintetiza nota com perfil harmônico modelando 'brilho' (0=grave wound, 1=plain agudo)."""
+    """Nota com 'brilho' via rolloff harmônico (0=grave escuro, 1=agudo brilhante).
+    Inclui muitos harmônicos p/ cobrir 2-4kHz (necessário pro brightness_index)."""
+    rolloff = 0.45 + brightness * 0.5  # 0.45 (escuro) .. 0.95 (brilhante)
     sig = np.zeros(N, dtype=np.float32)
-    for n in range(1, 10):
-        if brightness < 0.5:
-            # cordas wound: harmônicos baixos dominam
-            w = max(0.0, 1.0 - n * 0.15) * (1.0 - brightness)
-        else:
-            # cordas plain: distribuição mais equilibrada
-            w = max(0.0, 1.0 - n * 0.08) * brightness * 1.2
-        sig += w * np.sin(2 * np.pi * n * f0 * t + np.random.uniform(0, 0.1))
+    for n in range(1, 41):
+        if n * f0 >= SR / 2:
+            break
+        sig += (rolloff ** (n - 1)) * np.sin(2 * np.pi * n * f0 * t + np.random.uniform(0, 0.1))
     env = np.exp(-decay * t)
     return (sig * env).astype(np.float32)
 
@@ -149,4 +147,4 @@ moved_toward = r_post[0][0] == 4 or any(r[0] == 4 and r[1] == 7 for r in r_post[
 mark = "✓" if moved_toward else "?"
 print(f"  {mark} ranking se moveu em direção a (4, 7)\n")
 
-print("===== Tudo OK — pipeline v2 funcionando =====")
+print("===== Tudo OK — pipeline (features v2, 8-D) funcionando =====")
