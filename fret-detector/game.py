@@ -42,6 +42,9 @@ FPS = 60
 PERFECT_MS = 70
 GOOD_MS = 150
 
+# ---- metrônomo: clicks de pré-contagem antes do beat 0 do chart ----
+N_COUNTIN = 3
+
 DIFFICULTY = {
     "easy":   {"lead_time": 2.8, "perfect_ms": 90, "good_ms": 190},
     "normal": {"lead_time": LEAD_TIME, "perfect_ms": PERFECT_MS, "good_ms": GOOD_MS},
@@ -102,7 +105,8 @@ class GameScreen:
     Reusada pelo standalone (game.py) e pelo app integrado (studio.py)."""
 
     def __init__(self, chart, tuning_name, engine=None, audio_offset=0.0,
-                 show_hint=True, mock=False, difficulty="normal", validate_open=False):
+                 show_hint=True, mock=False, difficulty="normal", validate_open=False,
+                 metronome_in_game=False, metronome_accent=True):
         pygame.font.init()
         self.chart = chart
         self.tuning_name = tuning_name
@@ -111,6 +115,8 @@ class GameScreen:
         self.show_hint = show_hint
         self.mock = mock
         self.validate_open = validate_open and engine is not None
+        self.metronome_in_game = metronome_in_game and engine is not None
+        self.metronome_accent = metronome_accent
 
         diff = DIFFICULTY[difficulty]
         self.difficulty = difficulty
@@ -142,6 +148,13 @@ class GameScreen:
         self._await_note = None       # nota aguardando validação de posição
         self.pos_ok = 0
         self.pos_bad = 0
+        self._metro_started = False
+        self._metro_started_wall = None     # p/ fase do pulse visual
+        self._pause_metro_was_on = False
+        # countdown adaptativo: com metrônomo, garante caber N clicks de pré-contagem
+        if self.metronome_in_game:
+            spb = 60.0 / self.chart.bpm
+            self.countdown = max(N_COUNTIN * spb, self.lead_time)
 
     # ---- tempo ----
     def elapsed(self) -> float:
@@ -208,8 +221,18 @@ class GameScreen:
                 self.paused = not self.paused
                 if self.paused:
                     self._pause_mark = time.time()
+                    if self.engine and self.engine.metronome_on:
+                        self._pause_metro_was_on = True
+                        self.engine.set_metronome(False)
+                    else:
+                        self._pause_metro_was_on = False
                 else:
                     self.pause_accum += time.time() - self._pause_mark
+                    if self._pause_metro_was_on and self.engine:
+                        self.engine.set_metronome(True, bpm=self.chart.bpm,
+                                                  accent_every=4 if self.metronome_accent else 0,
+                                                  beat_offset=N_COUNTIN)
+                        self._metro_started_wall = time.time()   # reinicia fase do pulse
             elif ev.key == pygame.K_SPACE and self.mock and not self.paused:
                 self._mock_play()
         return None
@@ -237,9 +260,29 @@ class GameScreen:
                         self.pos_ok += int(ok)
                         self.pos_bad += int(not ok)
                         self._await_note = None
+        # liga o metrônomo na pré-contagem; os N primeiros clicks fazem o 3-2-1 e o
+        # (N+1)º cai no beat 0 do chart (acentuado via beat_offset).
+        if (self.metronome_in_game and self.engine is not None
+                and not self._metro_started):
+            spb = 60.0 / self.chart.bpm
+            if self.elapsed() >= -N_COUNTIN * spb:
+                self.engine.set_metronome(True, bpm=self.chart.bpm,
+                                          accent_every=4 if self.metronome_accent else 0,
+                                          beat_offset=N_COUNTIN)
+                self._metro_started = True
+                self._metro_started_wall = time.time()
+
         self._check_misses()
         if self.song_done() and self.finished_at is None:
             self.finished_at = time.time()
+            # ao terminar a fase, silencia o metrônomo
+            if self.engine and self.engine.metronome_on:
+                self.engine.set_metronome(False)
+
+    def on_exit(self):
+        """Chamado quando o usuário sai do jogo (studio.go ou QUIT do main standalone)."""
+        if self.engine is not None and self.engine.metronome_on:
+            self.engine.set_metronome(False)
 
     # ---- desenho ----
     def _lane_x(self, lane: int) -> float:
@@ -320,11 +363,43 @@ class GameScreen:
 
     def _draw_countdown(self, surf):
         el = self.elapsed()
+        if self.metronome_in_game:
+            # contagem alinhada aos clicks: 3, 2, 1 nos N batidas finais; GO no beat 0
+            spb = 60.0 / self.chart.bpm
+            countin_start = -N_COUNTIN * spb
+            if el < countin_start:
+                ui.draw_text(surf, "preparando...", self.font_hud, ui.DIM,
+                             center=(WIDTH / 2, HEIGHT / 2 - 20))
+                return
+            if el < 0:
+                beat_in = int((el - countin_start) / spb)   # 0..N-1
+                ui.draw_text(surf, str(N_COUNTIN - beat_in), self.font_big, ui.FG,
+                             center=(WIDTH / 2, HEIGHT / 2 - 20))
+                return
+            if el < 0.3:
+                ui.draw_text(surf, "GO", self.font_big, ui.GREEN,
+                             center=(WIDTH / 2, HEIGHT / 2 - 20))
+            return
+        # sem metrônomo: comportamento antigo
         if el >= 0:
             return
         n = int(-el) + 1
         txt = str(n) if n <= int(self.countdown) else "GO"
         ui.draw_text(surf, txt, self.font_big, ui.FG, center=(WIDTH / 2, HEIGHT / 2 - 20))
+
+    def _draw_pulse(self, surf):
+        if self._metro_started_wall is None or not self.metronome_in_game:
+            return
+        spb = 60.0 / self.chart.bpm
+        t = time.time() - self._metro_started_wall
+        if t < 0:
+            return
+        phase = (t % spb) / spb
+        intensity = max(0.0, 1.0 - phase * 3.0)
+        beat_k = int(t / spb)
+        is_accent = (self.metronome_accent
+                     and ((beat_k - N_COUNTIN) % 4) == 0)
+        ui.draw_beat_pulse(surf, WIDTH - 40, 36, intensity, is_accent, base_radius=12)
 
     def _draw_results(self, surf):
         overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -352,6 +427,7 @@ class GameScreen:
         self._draw_flashes(surf)
         self._draw_hud(surf)
         self._draw_status(surf)
+        self._draw_pulse(surf)
         self._draw_countdown(surf)
         if self.paused:
             ui.draw_text(surf, "PAUSA", self.font_big, ui.FG, center=(WIDTH / 2, HEIGHT / 2 - 20))
@@ -370,6 +446,10 @@ def main():
     parser.add_argument("--no-hint", action="store_true")
     parser.add_argument("--validate-open", action="store_true",
                         help="valida tambem se a nota foi tocada solta/pressionada")
+    parser.add_argument("--metronome", action="store_true",
+                        help="toca o metronomo no BPM do chart durante a fase")
+    parser.add_argument("--no-accent", action="store_true",
+                        help="metronomo sem acento (4/4)")
     parser.add_argument("--mock", action="store_true")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
@@ -410,7 +490,9 @@ def main():
     clock = pygame.time.Clock()
     gs = GameScreen(chart, chart.tuning, engine=engine, audio_offset=audio_offset,
                     show_hint=not args.no_hint, mock=args.mock, difficulty=args.difficulty,
-                    validate_open=args.validate_open)
+                    validate_open=args.validate_open,
+                    metronome_in_game=args.metronome,
+                    metronome_accent=not args.no_accent)
     try:
         running = True
         while running:
@@ -423,6 +505,7 @@ def main():
             gs.draw(screen)
             pygame.display.flip()
             clock.tick(FPS)
+        gs.on_exit()
         pygame.quit()
     finally:
         if engine is not None:

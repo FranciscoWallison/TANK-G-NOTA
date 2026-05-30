@@ -115,6 +115,7 @@ No menu você tem:
 - **Treino** — **calibração guiada** (corda × casa × 3 dinâmicas, som limpo) que valida e salva; e **validação livre** que mostra a nota tocada + corda + casa + **solta/pressionada**.
 - **Monitor (fone)** — liga/desliga; o app **reproduz a guitarra no seu fone do PC**.
 - **Velocidade** — easy / normal / hard (vai pro jogo).
+- **Metrônomo** — tela dedicada (BPM, acento 4/4, pulse visual) e **toca no jogo** no BPM do chart, com **pré-contagem audível (3-2-1)** alinhada à 1ª batida.
 - **Jogar música** — Guitar Hero validando **nota + solta/pressionada** (selo de posição). **ESC** volta ao menu.
 
 As escolhas ficam salvas em `settings.json`.

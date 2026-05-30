@@ -16,7 +16,7 @@ python studio.py                 # auto-detecta o TANK-G
 python studio.py --device 2 --gain 40
 ```
 
-Menu com: **Dispositivo** (identifica o TANK-G + escolhe o fone), **Afinador**, **Treino** (calibração **guiada** corda × casa × 3 dinâmicas + validação livre: nota + corda + casa + **solta/pressionada**), **Monitor** (reproduz a guitarra no fone do PC — full-duplex), **Velocidade** (easy/normal/hard) e **Jogar música** (valida nota + solta/pressionada). **ESC** volta ao menu. Config salva em `settings.json`.
+Menu com: **Dispositivo** (identifica o TANK-G + escolhe o fone), **Afinador**, **Treino** (calibração **guiada** corda × casa × 3 dinâmicas + validação livre: nota + corda + casa + **solta/pressionada**), **Monitor** (reproduz a guitarra no fone do PC — full-duplex), **Velocidade** (easy/normal/hard), **Metrônomo** (BPM/acento + pulse visual; toca no jogo com **pré-contagem 3-2-1** alinhada ao beat 0) e **Jogar música** (valida nota + solta/pressionada). **ESC** volta ao menu. Config salva em `settings.json`.
 
 | Peça | Arquivo |
 |------|---------|
@@ -271,6 +271,7 @@ python game.py --list                                   # músicas embutidas
 - [x] **v2** — Calibração + classificador + modo aprendizado ✅
 - [x] **v3** — Jogo Guitar Hero (onset + julgamento de timing) ✅
 - [x] **v4** — App unificado TANK-G Studio (menu + monitor pelo fone) ✅
+- [x] **v6** — Metrônomo (motor + tela + no jogo) com **pré-contagem 3-2-1** e **pulse visual** ✅
 - [x] **v5** — Features v2 (8, c/ sustain) + calibração guiada + validação solta/pressionada ✅
 - [ ] Trilha/metrônomo tocando junto no jogo
 - [ ] Editor de chart / importar MIDI/tablatura

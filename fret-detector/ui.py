@@ -41,6 +41,17 @@ def draw_text(surf, text, fnt, color, center=None, topleft=None, midtop=None):
     return rect
 
 
+def draw_beat_pulse(surf, cx, cy, intensity, is_accent, base_radius=18):
+    """Círculo que pulsa com a batida do metrônomo. intensity 0..1 (decai)."""
+    intensity = max(0.0, min(1.0, intensity))
+    col = YELLOW if is_accent else GREEN
+    rgb = tuple(int(c * intensity) for c in col)
+    r = int(base_radius * (1.4 if is_accent else 1.0) * (0.55 + 0.45 * intensity))
+    if r > 0:
+        pygame.draw.circle(surf, rgb, (int(cx), int(cy)), r)
+    pygame.draw.circle(surf, col, (int(cx), int(cy)), max(r, 4), 2)
+
+
 def level_bar(surf, rect, rms, peak=0.3):
     """Barra de nível de sinal (0..peak). rect = (x, y, w, h)."""
     x, y, w, h = rect

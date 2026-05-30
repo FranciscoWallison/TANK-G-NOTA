@@ -20,6 +20,7 @@ class Chart:
     bpm: int
     tuning: str
     notes: list[Note] = field(default_factory=list)
+    category: str = "musica"   # "musica" | "teste"
 
     def duration_beats(self) -> float:
         return max((n.beat for n in self.notes), default=0.0) + 4.0
@@ -33,6 +34,11 @@ def _seq(notes_str: str, start_beat: float = 0.0, step: float = 1.0) -> list[Not
         out.append(Note(beat=beat, midi=note_to_midi(token)))
         beat += step
     return out
+
+
+def _from_midis(midis: list[int], step: float = 1.0) -> list[Note]:
+    """Notas igualmente espaçadas a partir de uma lista de MIDI (1 nota por 'step' batidas)."""
+    return [Note(beat=i * step, midi=m) for i, m in enumerate(midis)]
 
 
 # ---- Chart 1: escala / cordas soltas e casas baixas, lento (aprender) ----
@@ -60,9 +66,31 @@ RIFF_SIMPLES = Chart(
     ),
 )
 
+# ---- Categoria TESTE: riffs pequenos e LENTOS p/ validar a lógica das notas
+# e continuar calibrando a guitarra. Afinação padrão (standard).
+# Riff 1: transcrito da tab enviada (gallop na 5ª corda + baixos e B3 na 4ª).
+# Lido em afinação PADRÃO — note que a tab original é em Drop D; aqui o objetivo
+# é validar a sequência de notas, não a fidelidade musical.
+_TESTE_RIFF1_MIDIS = [
+    52, 55, 54, 55, 59, 55, 54, 55, 52, 55, 54, 55, 59, 55, 54, 55,
+    50, 55, 54, 55, 59, 55, 54, 55, 49, 55, 54, 55, 59, 55, 54, 55,
+    52, 55, 54, 55, 59, 55, 54, 55, 52, 55, 54, 55, 59, 55, 54, 55,
+    50, 55, 54, 55, 59, 55, 54, 55, 49, 55, 54, 55, 59, 55, 54, 55,
+    52, 55, 54, 55, 59, 55, 52, 55, 54, 55, 59, 55, 54, 55, 50, 55,
+    54, 55, 59, 55, 54, 55,
+]
+TESTE_RIFF1 = Chart(
+    name="Teste — Riff 1 (lento)",
+    bpm=60,
+    tuning="standard",
+    category="teste",
+    notes=_from_midis(_TESTE_RIFF1_MIDIS, step=1.0),  # 1 nota por segundo @ 60 BPM
+)
+
 CHARTS: dict[str, Chart] = {
     "escala_mi": ESCALA_MI,
     "riff_simples": RIFF_SIMPLES,
+    "teste_riff1": TESTE_RIFF1,
 }
 
 DEFAULT_CHART = "escala_mi"

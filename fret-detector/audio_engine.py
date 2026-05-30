@@ -30,14 +30,26 @@ DEFAULT_SUSTAIN_THRESHOLD = 0.4   # fallback quando sem calibração
 class AudioEngine:
     def __init__(self, device=None, gain=40.0, output_device=None,
                  monitor_on=False, monitor_gain=12.0,
+                 metronome_on=False, metronome_bpm=100, metronome_accent_every=4,
+                 metronome_gain=0.6, metronome_beat_offset=0,
                  silence_rms=0.004, attack_rms=0.015):
         self.device = device if device is not None else find_tank_g_device()
         self.output_device = output_device
         self.gain = gain
         self.monitor_on = monitor_on
         self.monitor_gain = monitor_gain
+        self.metronome_on = metronome_on
+        self.metronome_bpm = max(20, min(300, int(metronome_bpm)))
+        self.metronome_accent_every = max(0, int(metronome_accent_every))  # 0 = sem acento
+        self.metronome_beat_offset = int(metronome_beat_offset)  # desloca onde cai o acento
+        self.metronome_gain = metronome_gain
         self.silence_rms = silence_rms
         self.attack_rms = attack_rms
+
+        # click do metrônomo (pré-computado)
+        self._click_normal, self._click_accent = self._make_clicks(SAMPLE_RATE)
+        self._metro_sample = 0               # contador de amostras desde que ligou
+        self._active_click = None            # (waveform, abs_start_sample) ainda renderizando
 
         self.buffer = np.zeros(BUFFER_SIZE, dtype=np.float32)
         self._lock = threading.Lock()
@@ -99,12 +111,72 @@ class AudioEngine:
         except Exception:
             return False
 
+    # ---- metrônomo ----
+    @staticmethod
+    def _make_clicks(sr: int):
+        """Pré-computa 2 cliques curtos (~25ms): normal (1000Hz) e acento (1500Hz)."""
+        dur = 0.025
+        n = int(sr * dur)
+        t = np.arange(n) / sr
+        env = np.exp(-t / 0.005)  # tau ~5ms — bem snappy
+        normal = (np.sin(2 * np.pi * 1000 * t) * env * 0.6).astype(np.float32)
+        accent = (np.sin(2 * np.pi * 1500 * t) * env * 0.85).astype(np.float32)
+        return normal, accent
+
+    def _render_metronome(self, outdata, frames):
+        if not self.metronome_on or self.metronome_bpm <= 0:
+            return
+        spb = SAMPLE_RATE * 60.0 / self.metronome_bpm
+        block_start = self._metro_sample
+        block_end = block_start + frames
+        # disparos de beat que caem neste bloco → ativam um click
+        k = int(np.ceil(block_start / spb))
+        while True:
+            beat_pos = int(round(k * spb))
+            if beat_pos >= block_end:
+                break
+            if beat_pos >= block_start:
+                is_accent = (self.metronome_accent_every > 0
+                             and ((k - self.metronome_beat_offset) % self.metronome_accent_every) == 0)
+                click = self._click_accent if is_accent else self._click_normal
+                self._active_click = (click, beat_pos)
+            k += 1
+        # renderiza o click ativo dentro deste bloco
+        if self._active_click is not None:
+            click, start = self._active_click
+            off_block = max(0, start - block_start)
+            off_click = max(0, block_start - start)
+            n = min(len(click) - off_click, frames - off_block)
+            if n > 0:
+                mix = click[off_click:off_click + n] * self.metronome_gain
+                outdata[off_block:off_block + n, 0] += mix
+                outdata[off_block:off_block + n, 1] += mix
+                if off_click + n >= len(click):
+                    self._active_click = None
+
+    def set_metronome(self, on: bool, bpm: int | None = None,
+                      accent_every: int | None = None, gain: float | None = None,
+                      beat_offset: int | None = None):
+        if bpm is not None:
+            self.metronome_bpm = max(20, min(300, int(bpm)))
+        if accent_every is not None:
+            self.metronome_accent_every = max(0, int(accent_every))
+        if gain is not None:
+            self.metronome_gain = max(0.0, min(1.5, gain))
+        if beat_offset is not None:
+            self.metronome_beat_offset = int(beat_offset)
+        if on != self.metronome_on:
+            self.metronome_on = on
+            self._metro_sample = 0
+            self._active_click = None
+            self._reopen()   # pode precisar abrir/fechar full-duplex
+
     # ---- ciclo de vida ----
     def start(self):
         if self.device is None:
             raise RuntimeError("Nenhum dispositivo de entrada encontrado (use device=N).")
         self._running = True
-        if self.monitor_on:
+        if self.monitor_on or self.metronome_on:
             self._open_duplex()
         else:
             self._open_input()
@@ -137,6 +209,7 @@ class AudioEngine:
                 last_err = e
         self.monitor_available = False
         self.monitor_on = False
+        self.metronome_on = False   # full-duplex falhou → metrônomo tb não toca
         self.monitor_error = f"{type(last_err).__name__}: {str(last_err)[:90]}"
         self._open_input()
 
@@ -149,7 +222,7 @@ class AudioEngine:
             self.stream = None
         if not self._running:
             return
-        if self.monitor_on:
+        if self.monitor_on or self.metronome_on:
             self._open_duplex()
         else:
             self._open_input()
@@ -251,11 +324,17 @@ class AudioEngine:
             return
         self._analyze(indata[:, 0])
         if self.monitor_on:
-            mono = np.clip(indata[:, 0] * self.monitor_gain, -1.0, 1.0)
+            mono = indata[:, 0] * self.monitor_gain
             outdata[:, 0] = mono
             outdata[:, 1] = mono
         else:
             outdata.fill(0)
+        # metrônomo (somado ao monitor); avança contador só quando ligado
+        if self.metronome_on:
+            self._render_metronome(outdata, frames)
+            self._metro_sample += frames
+        # evita estouro na soma monitor + click
+        np.clip(outdata, -1.0, 1.0, out=outdata)
 
     # ---- API ----
     def poll_onset(self):

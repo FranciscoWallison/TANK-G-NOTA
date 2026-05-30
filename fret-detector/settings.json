@@ -1,10 +1,14 @@
 {
   "device_in": 2,
-  "device_out": null,
+  "device_out": 6,
   "gain": 60.0,
   "tuning": "standard",
   "difficulty": "normal",
   "monitor_on": true,
   "monitor_gain": 12.0,
-  "chart": "escala_mi"
+  "chart": "escala_mi",
+  "validation": "note+open",
+  "metronome_bpm": 100,
+  "metronome_accent": true,
+  "metronome_in_game": true
 }

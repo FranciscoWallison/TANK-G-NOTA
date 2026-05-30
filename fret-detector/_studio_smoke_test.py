@@ -26,11 +26,22 @@ app = App(state)
 print("App criado (engine=None)")
 
 surf = app.surface
-for name in ("menu", "device", "tuner", "train", "game"):
+for name in ("menu", "device", "tuner", "train", "select", "metronome", "game"):
     app.go(name)
     app.screen.update()
     app.screen.draw(surf)
     print(f"  ✓ tela '{name}' navegou, atualizou e desenhou")
+
+# Treino: exercita os sub-modos (calib grade + riff de teste + live)
+app.go("train")
+tr = app.screen
+for starter, mode in ((tr._start_calib, "calib"), (tr._start_riff, "riff")):
+    starter()
+    tr.update(); tr.draw(surf)
+    assert tr.mode == mode and len(tr.steps) > 0, f"modo {mode} não iniciou"
+    print(f"  ✓ Treino modo '{mode}' iniciou ({len(tr.steps)} passos) e desenhou")
+tr._set_mode("live"); tr.draw(surf)
+print("  ✓ Treino modo 'live' desenhou")
 
 # volta ao menu e simula clique de toggle de dificuldade/monitor
 app.go("menu")

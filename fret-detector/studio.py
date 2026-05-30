@@ -24,7 +24,8 @@ import ui
 from fret_detector import find_tank_g_device, TUNINGS
 from charts import CHARTS, DEFAULT_CHART
 from game import GameScreen, WIDTH, HEIGHT, FPS
-from screens import MenuScreen, DeviceScreen, TunerScreen, TrainScreen
+from screens import (MenuScreen, DeviceScreen, TunerScreen, TrainScreen,
+                     SongSelectScreen, MetronomeScreen)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SETTINGS = SCRIPT_DIR / "settings.json"
@@ -41,6 +42,9 @@ class AppState:
     monitor_gain: float = 12.0
     chart: str = DEFAULT_CHART
     validation: str = "note+open"   # "note" | "note+open" | "note+fret"
+    metronome_bpm: int = 100
+    metronome_accent: bool = True   # acento a cada 4 batidas (4/4)
+    metronome_in_game: bool = True  # toca o metrônomo durante a fase (no BPM do chart)
 
     @classmethod
     def load(cls):
@@ -103,6 +107,12 @@ class App:
         return eng
 
     def go(self, name: str):
+        # hook de saída da tela atual (limpeza: parar metrônomo, etc.)
+        if hasattr(self.screen, "on_exit"):
+            try:
+                self.screen.on_exit()
+            except Exception:
+                pass
         self.current_name = name
         if name == "menu":
             self.screen = MenuScreen(self)
@@ -112,6 +122,10 @@ class App:
             self.screen = TunerScreen(self)
         elif name == "train":
             self.screen = TrainScreen(self)
+        elif name == "select":
+            self.screen = SongSelectScreen(self)
+        elif name == "metronome":
+            self.screen = MetronomeScreen(self)
         elif name == "game":
             chart = CHARTS[self.state.chart]
             self.screen = GameScreen(
@@ -119,6 +133,8 @@ class App:
                 audio_offset=0.08, show_hint=True, mock=(self.engine is None),
                 difficulty=self.state.difficulty,
                 validate_open=(self.state.validation == "note+open"),
+                metronome_in_game=self.state.metronome_in_game,
+                metronome_accent=self.state.metronome_accent,
             )
 
     def run(self):
